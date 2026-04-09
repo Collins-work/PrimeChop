@@ -719,11 +719,19 @@ def format_catalog_items_list(items: list) -> str:
     if not items:
         return f"{EMOJI_INFO} No menu items found.\n\nUse <b>Add Item</b> to create the first item."
     
+    def _value(row, key: str, default):
+        if isinstance(row, dict):
+            return row.get(key, default)
+        try:
+            return row[key]
+        except (KeyError, IndexError, TypeError):
+            return default
+
     lines = [f"{EMOJI_FOOD} <b>Menu Items</b>\n"]
     for item in items:
-        vendor_name = item.get("vendor_name", "Unknown")
-        price = item.get("price", 0)
-        active = "✅" if item.get("active", 1) else "❌"
+        vendor_name = _value(item, "vendor_name", "Unknown") or "Unknown"
+        price = int(_value(item, "price", 0) or 0)
+        active = "✅" if _value(item, "active", 1) else "❌"
         lines.append(f"{active} <b>#{item['id']}</b> - {item['name']}")
         lines.append(f"   {vendor_name} • ₦{price:,}\n")
     

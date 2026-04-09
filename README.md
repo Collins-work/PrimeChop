@@ -64,6 +64,10 @@ Render notes:
 - Deploy as a **Web Service**.
 - Start command stays `python app.py`.
 - Keep `WEBHOOK_BASE_URL` set to your public HTTPS service URL.
+- Keep `LIGHTWEIGHT_MODE=true` on free plans to reduce memory/CPU usage.
+- Use `ALLOWED_UPDATES=message,callback_query` unless you need extra Telegram update types.
+- Use `STARTUP_WAITER_SYNC_LIMIT=500` (or lower) to reduce startup work.
+- Keep `WEBHOOK_ENABLED=true` on Render Web Service for best stability.
 
 ## 4) Commands
 
@@ -118,6 +122,11 @@ Environment variables:
 - `EXCEL_AUDIT_ASYNC_WRITES=true` (recommended for faster bot replies)
 - `EXCEL_AUDIT_FLUSH_INTERVAL_SECONDS=1.0` (lower = more frequent flushes, higher = fewer I/O calls)
 - `EXCEL_AUDIT_BATCH_SIZE=25` (higher = better throughput under load)
+
+Lightweight runtime tuning:
+- `LIGHTWEIGHT_MODE=true` enables lean startup and polling behavior for constrained hosts.
+- `ALLOWED_UPDATES=message,callback_query` limits Telegram update traffic.
+- `STARTUP_WAITER_SYNC_LIMIT=500` caps waiter sync rows loaded at boot.
 
 SQLite mode:
 - Writes order audit events to `audit_orders` and waiter snapshots to `audit_waiters`.

@@ -91,11 +91,17 @@ class Settings:
     excel_audit_async_writes: bool
     excel_audit_flush_interval_seconds: float
     excel_audit_batch_size: int
+    lightweight_mode: bool
+    allowed_updates: list[str]
+    startup_waiter_sync_limit: int
 
 
 settings = Settings(
     telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", "").strip(),
-    webhook_enabled=_parse_bool(os.getenv("WEBHOOK_ENABLED", "false"), default=False),
+    webhook_enabled=_parse_bool(
+        os.getenv("WEBHOOK_ENABLED", ""),
+        default=bool(os.getenv("RENDER") and os.getenv("WEBHOOK_BASE_URL")),
+    ),
     webhook_base_url=os.getenv("WEBHOOK_BASE_URL", "").strip().rstrip("/"),
     webhook_path=(os.getenv("WEBHOOK_PATH", "/telegram/webhook").strip() or "/telegram/webhook"),
     webhook_listen_host=os.getenv("WEBHOOK_LISTEN_HOST", "0.0.0.0").strip(),
@@ -148,6 +154,13 @@ settings = Settings(
     excel_audit_async_writes=_parse_bool(os.getenv("EXCEL_AUDIT_ASYNC_WRITES", "true"), default=True),
     excel_audit_flush_interval_seconds=float(os.getenv("EXCEL_AUDIT_FLUSH_INTERVAL_SECONDS", "1.0")),
     excel_audit_batch_size=max(1, int(os.getenv("EXCEL_AUDIT_BATCH_SIZE", "25"))),
+    lightweight_mode=_parse_bool(
+        os.getenv("LIGHTWEIGHT_MODE", "true" if os.getenv("RENDER") else "false"),
+        default=bool(os.getenv("RENDER")),
+    ),
+    allowed_updates=_parse_csv_list(os.getenv("ALLOWED_UPDATES", "message,callback_query"))
+    or ["message", "callback_query"],
+    startup_waiter_sync_limit=max(100, int(os.getenv("STARTUP_WAITER_SYNC_LIMIT", "500"))),
 )
 
 if not settings.telegram_bot_token:

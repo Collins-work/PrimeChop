@@ -277,6 +277,9 @@ async def korapay_wallet_callback(request: web.Request) -> web.Response:
 
 
 def start_korapay_callback_server():
+    if settings.webhook_enabled:
+        logger.info("Skipping dedicated KoraPay callback server in webhook mode to avoid port conflicts.")
+        return
     if not settings.korapay_callback_url:
         return
 
@@ -3285,7 +3288,7 @@ def main_with_retry():
 
 def main():
     db.init()
-    existing_waiters = [dict(row) for row in db.list_waiters(limit=5000)]
+    existing_waiters = [dict(row) for row in db.list_waiters(limit=settings.startup_waiter_sync_limit)]
     audit_trail.sync_waiters(existing_waiters)
     bootstrap_menu_if_empty()
     start_korapay_callback_server()
@@ -3327,8 +3330,19 @@ def main():
             ]
         )
 
-    request = HTTPXRequest(connect_timeout=30, read_timeout=30, write_timeout=30, pool_timeout=30)
-    updates_request = HTTPXRequest(connect_timeout=30, read_timeout=30, write_timeout=30, pool_timeout=30)
+    request_timeout = 15 if settings.lightweight_mode else 30
+    request = HTTPXRequest(
+        connect_timeout=request_timeout,
+        read_timeout=request_timeout,
+        write_timeout=request_timeout,
+        pool_timeout=request_timeout,
+    )
+    updates_request = HTTPXRequest(
+        connect_timeout=request_timeout,
+        read_timeout=request_timeout,
+        write_timeout=request_timeout,
+        pool_timeout=request_timeout,
+    )
     app = (
         Application.builder()
         .token(settings.telegram_bot_token)
@@ -3431,14 +3445,16 @@ def main():
             port=settings.webhook_port,
             url_path=webhook_path.lstrip("/"),
             webhook_url=webhook_url,
-            allowed_updates=Update.ALL_TYPES,
+            allowed_updates=settings.allowed_updates,
             bootstrap_retries=-1,
         )
     else:
         logger.info("Starting Telegram bot in polling mode")
         app.run_polling(
-            allowed_updates=Update.ALL_TYPES,
+            allowed_updates=settings.allowed_updates,
             bootstrap_retries=-1,
+            drop_pending_updates=settings.lightweight_mode,
+            pool_timeout=10 if settings.lightweight_mode else 20,
         )
 
 
