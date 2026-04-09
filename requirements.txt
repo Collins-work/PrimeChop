@@ -1,0 +1,7 @@
+python-telegram-bot==21.7
+python-dotenv==1.0.1
+aiohttp==3.10.11
+tzdata==2025.2
+openpyxl==3.1.5
+gspread==6.1.4
+google-auth==2.35.0
