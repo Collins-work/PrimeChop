@@ -956,7 +956,12 @@ async def checkout_payment_callback(update: Update, context: ContextTypes.DEFAUL
                 order_ref=requested_order_ref,
             )
         except Exception as exc:
-            logger.exception("Order payment initialization failed")
+            logger.error(
+                f"Order payment initialization failed. Mode: {settings.korapay_mode}, "
+                f"Secret key set: {bool(settings.korapay_secret_key)}, "
+                f"Callback URL set: {bool(settings.korapay_callback_url)}. Error: {exc}",
+                exc_info=True,
+            )
             await _edit_or_send_callback_message(
                 query,
                 format_error_message(f"Unable to start payment right now: {exc}"),
@@ -3287,12 +3292,37 @@ def main_with_retry():
 
 
 def main():
+    logger.info("🚀 Starting PrimeChop bot...")
+    logger.info(f"Configuration: WEBHOOK_ENABLED={settings.webhook_enabled}, LIGHTWEIGHT_MODE={settings.lightweight_mode}, KORAPAY_MODE={settings.korapay_mode}")
+    
+    logger.info("Initializing database...")
     db.init()
-    existing_waiters = [dict(row) for row in db.list_waiters(limit=settings.startup_waiter_sync_limit)]
-    audit_trail.sync_waiters(existing_waiters)
-    bootstrap_menu_if_empty()
+    logger.info("✅ Database initialized")
+    
+    # Only sync waiters if audit trail is enabled and not in lightweight mode
+    if not settings.lightweight_mode:
+        logger.info("Syncing waiters to audit trail...")
+        existing_waiters = [dict(row) for row in db.list_waiters(limit=settings.startup_waiter_sync_limit)]
+        audit_trail.sync_waiters(existing_waiters)
+        logger.info(f"✅ Synced {len(existing_waiters)} waiters")
+    
+    # Only bootstrap menu on first run (skip if vendors already exist)
+    logger.info("Checking if menu needs bootstrap...")
+    vendor_count = len(db.list_vendors())
+    if vendor_count == 0:
+        logger.info("Bootstrapping menu - no vendors found")
+        bootstrap_menu_if_empty()
+        logger.info("✅ Menu bootstrapped")
+    else:
+        logger.info(f"✅ Menu already has {vendor_count} vendors, skipping bootstrap")
+    
+    logger.info("Setting up Korapay callback server...")
     start_korapay_callback_server()
+    logger.info("✅ Korapay setup complete")
+    
+    logger.info("Setting up asyncio event loop...")
     asyncio.set_event_loop(asyncio.new_event_loop())
+    logger.info("✅ Event loop ready")
 
     async def post_init(application: Application):
         await application.bot.set_my_description(

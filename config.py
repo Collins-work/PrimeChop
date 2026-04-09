@@ -2,8 +2,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Set
 import os
+import logging
 
 from dotenv import load_dotenv
+
+logger = logging.getLogger(__name__)
 
 
 load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env", override=True)
@@ -165,3 +168,56 @@ settings = Settings(
 
 if not settings.telegram_bot_token:
     raise RuntimeError("TELEGRAM_BOT_TOKEN is required in environment variables.")
+
+# Force mock mode if test credentials are detected to prevent credential/mode mismatches
+if (
+    settings.korapay_mode == "live"
+    and (settings.korapay_secret_key.startswith("sk_test_") 
+         or settings.korapay_public_key.startswith("pk_test_"))
+):
+    logger.warning(
+        "⚠️ Test Korapay credentials detected in live mode. Auto-switching to mock mode. "
+        "Use real production credentials for live mode or set KORAPAY_MODE=mock in .env."
+    )
+    # Create new dataclass instance with corrected mode
+    settings = Settings(
+        telegram_bot_token=settings.telegram_bot_token,
+        webhook_enabled=settings.webhook_enabled,
+        webhook_base_url=settings.webhook_base_url,
+        webhook_path=settings.webhook_path,
+        webhook_listen_host=settings.webhook_listen_host,
+        webhook_port=settings.webhook_port,
+        admin_ids=settings.admin_ids,
+        waiter_ids=settings.waiter_ids,
+        bot_timezone=settings.bot_timezone,
+        cafeteria_name=settings.cafeteria_name,
+        order_vendors=settings.order_vendors,
+        delivery_halls=settings.delivery_halls,
+        korapay_mode="mock",
+        korapay_secret_key=settings.korapay_secret_key,
+        korapay_public_key=settings.korapay_public_key,
+        korapay_currency=settings.korapay_currency,
+        korapay_callback_url=settings.korapay_callback_url,
+        korapay_initialize_url=settings.korapay_initialize_url,
+        korapay_web_host=settings.korapay_web_host,
+        korapay_web_port=settings.korapay_web_port,
+        service_fee_total=settings.service_fee_total,
+        service_fee_split_mode=settings.service_fee_split_mode,
+        placeholder_image_url=settings.placeholder_image_url,
+        start_logo=settings.start_logo,
+        super_admin_secret=settings.super_admin_secret,
+        excel_audit_enabled=settings.excel_audit_enabled,
+        excel_audit_backend=settings.excel_audit_backend,
+        excel_audit_file=settings.excel_audit_file,
+        excel_audit_sqlite_db=settings.excel_audit_sqlite_db,
+        google_sheets_spreadsheet_id=settings.google_sheets_spreadsheet_id,
+        google_sheets_credentials_file=settings.google_sheets_credentials_file,
+        google_sheets_order_sheet=settings.google_sheets_order_sheet,
+        google_sheets_waiter_sheet=settings.google_sheets_waiter_sheet,
+        excel_audit_async_writes=settings.excel_audit_async_writes,
+        excel_audit_flush_interval_seconds=settings.excel_audit_flush_interval_seconds,
+        excel_audit_batch_size=settings.excel_audit_batch_size,
+        lightweight_mode=settings.lightweight_mode,
+        allowed_updates=settings.allowed_updates,
+        startup_waiter_sync_limit=settings.startup_waiter_sync_limit,
+    )
