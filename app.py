@@ -347,6 +347,102 @@ FIXED_VENDOR_PRODUCTS: dict[str, list[tuple[str, int]]] = {
         ("Pineapple", 500),
         ("Orange", 200),
     ],
+    "Grandpa chips": [
+        ("Potato chips (small)", 1500),
+        ("Potato chips (medium)", 2000),
+        ("Potato chips (large)", 2500),
+        ("Mashed chips (small)", 1500),
+        ("Mashed chips (medium)", 2000),
+        ("Mashed chips (large)", 2500),
+        ("Fried yam (small)", 1800),
+        ("Fried yam (large)", 2500),
+        ("Gizzard", 500),
+        ("Round fish", 500),
+        ("Sausage", 250),
+        ("Boiled egg", 300),
+        ("Beef", 200),
+        ("Egg sauce", 500),
+        ("Plastic pack", 200),
+    ],
+    "6:33 pizza republic": [
+        ("Small Chicken BBQ Pizza", 3500),
+        ("Small Chicken Suya Pizza", 3500),
+        ("Small Pizza Pepperoni", 3500),
+        ("Medium Chicken BBQ Pizza", 4500),
+        ("Medium Chicken Suya Pizza", 4500),
+        ("Medium Pizza Pepperoni", 4500),
+        ("Big Chicken BBQ Pizza", 6500),
+        ("Big Chicken Suya Pizza", 6500),
+        ("Big Pizza Pepperoni", 6500),
+        ("Burger", 2000),
+        ("Cheese Burger", 2300),
+        ("Extra Cheese", 1000),
+        ("Extra Chicken", 500),
+    ],
+    "CU Pizza & burger": [
+        ("Regular Beef Pizza Burger", 1500),
+        ("Regular Chicken Pizza Burger", 1700),
+        ("Egg Beef Pizza Burger", 1900),
+        ("Egg Chicken Pizza Burger", 2100),
+        ("Extra Sausage & Beef Pizza Burger", 2300),
+        ("Extra Sausage & Chicken Pizza Burger", 2500),
+        ("Extra Sausage & Beef Pizza Burger (Big Dough)", 2700),
+        ("Extra Sausage & Chicken Pizza Burger (Big Dough)", 2900),
+        ("Egg + Extra Sausage with Beef Pizza Burger", 2700),
+        ("Egg + Extra Sausage with Chicken Pizza Burger", 3000),
+        ("Cheese", 700),
+    ],
+    "Bread warmer": [
+        ("Bread Warmer", 1800),
+        ("Bread Warmer with 2 Sausages", 2100),
+        ("Bread Warmer with 3 Sausages", 2400),
+        ("Jumbo with 2 Sausages", 2500),
+        ("Jumbo with 3 Sausages", 2800),
+        ("Extra Beef", 500),
+        ("Extra Cheese", 1000),
+    ],
+    "Burrito chicken": [
+        ("Regular with Chicken + 1 Sausage", 2200),
+        ("Regular with Chicken + 2 Sausages", 2500),
+        ("Regular with Chicken + 3 Sausages", 2800),
+        ("Regular with Chicken + 4 Sausages", 3100),
+        ("Regular with Chicken + 5 Sausages", 3400),
+        ("Super Pack with Chicken + 1 Sausage", 2700),
+        ("Super Pack with Chicken + 2 Sausages", 3000),
+        ("Super Pack with Chicken + 3 Sausages", 3300),
+        ("Super Pack with Chicken + 4 Sausages", 3600),
+        ("Super Pack with Chicken + 5 Sausages", 3900),
+        ("Mega Pack with Chicken + 1 Sausage", 4500),
+        ("Mega Pack with Chicken + 2 Sausages", 5000),
+        ("Mega Pack with Chicken + 3 Sausages", 5300),
+        ("Mega Pack with Chicken + 4 Sausages", 5600),
+        ("Mega Pack with Chicken + 5 Sausages", 5900),
+        ("Regular Chicken Only", 1000),
+        ("Super Chicken Only", 1500),
+        ("Mega Chicken Only", 3000),
+        ("Sausage Only", 300),
+        ("Burrito Only", 700),
+    ],
+    "Slash shawarma": [
+        ("Shawarma with 1 Sausage", 2000),
+        ("Shawarma with 2 Sausages", 2500),
+        ("Shawarma with 2 Sausages (Jumbo)", 3000),
+        ("Shawarma with 3 Sausages", 3500),
+        ("Shawarma with 3 Sausages + Extra Chicken", 4000),
+    ],
+    "Evelyn chip& protein": [
+        ("Yam & Potatoes Chips", 1500),
+        ("Plantain", 200),
+        ("Plastic pack", 200),
+        ("Chicken", 1500),
+        ("Fish", 500),
+        ("Sausage", 300),
+        ("Egg", 300),
+        ("Beef", 200),
+        ("Ponmo", 100),
+        ("Egg sauce", 800),
+        ("Gizzard", 500),
+    ],
     "Yam and fish": [
         ("Half fish", 1200),
         ("Full fish", 3000),
@@ -2352,7 +2448,7 @@ async def complete(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def additem_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    if not is_admin(user.id):
+    if not is_admin(user.id) and not has_super_admin_access(user.id, context):
         text = format_unauthorized()
         await update.effective_message.reply_text(text, parse_mode="HTML")
         return ConversationHandler.END
@@ -2369,7 +2465,11 @@ async def additem_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def additem_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     runtime.add_item_draft.setdefault(user.id, {})["name"] = update.effective_message.text.strip()
-    text = "Which vendor should this item belong to?\n\nExample: Bread Warmer Restaurant"
+    text = (
+        "Which vendor should this item belong to?\n\n"
+        "Send an existing vendor name, or type a brand new vendor name to create it.\n"
+        "Example: Bread warmer"
+    )
     await update.effective_message.reply_text(text, parse_mode="HTML")
     return ADD_ITEM_VENDOR
 
