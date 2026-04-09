@@ -305,8 +305,8 @@ def format_room_prompt_with_hall(hall_name: str) -> str:
     """Prompt user to enter room number after hall selection."""
     return (
         f"🏠 <b>{hall_name}</b>\n\n"
-        "Enter your room number in digits only.\n"
-        "Example: 308"
+        "Enter your room number.\n"
+        "Examples: E204 or 308"
     )
 
 

@@ -586,8 +586,9 @@ def _ensure_order_draft(context: ContextTypes.DEFAULT_TYPE) -> dict:
     return draft
 
 
-def _order_checkout_email(user) -> str:
-    return f"user{user.id}@primechop.local"
+def _checkout_customer_email(user) -> str:
+    # KoraPay rejects local-only email domains like .local in live mode.
+    return f"user{user.id}@primechop.app"
 
 
 async def _send_vendor_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -660,7 +661,7 @@ async def _finalize_order_checkout(update: Update, context: ContextTypes.DEFAULT
     try:
         payment_result = await payments.initialize_order_checkout(
             amount=amount,
-            email=_order_checkout_email(user),
+            email=_checkout_customer_email(user),
             full_name=user.full_name,
             user_id=user.id,
             order_ref=order_ref,
@@ -1032,10 +1033,41 @@ async def send_start_banner(update: Update, role: str):
     await message.reply_text("Choose an option below.", reply_markup=home_keyboard(role))
 
 
+async def _edit_or_send_callback_message(
+    query,
+    text: str,
+    parse_mode: str = "HTML",
+    reply_markup=None,
+):
+    """Prefer editing the callback message; fall back to sending a new one when editing is unavailable."""
+    try:
+        await query.edit_message_text(
+            text=text,
+            parse_mode=parse_mode,
+            reply_markup=reply_markup,
+        )
+    except Exception:
+        await query.message.reply_text(
+            text=text,
+            parse_mode=parse_mode,
+            reply_markup=reply_markup,
+        )
+
+
 async def start_place_order_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    await menu(update, context)
+    vendors = _get_order_vendor_rows()
+    if not vendors:
+        await _edit_or_send_callback_message(query, format_menu_empty(), parse_mode="HTML")
+        return
+
+    await _edit_or_send_callback_message(
+        query,
+        "🏪 <b>Choose a Vendor</b>\n\nSelect where you want to order from.",
+        parse_mode="HTML",
+        reply_markup=vendor_selection_keyboard(vendors),
+    )
 
 
 async def order_action_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1044,20 +1076,42 @@ async def order_action_callback(update: Update, context: ContextTypes.DEFAULT_TY
 
     action = query.data.split(":", 1)[1]
     if action == "my_orders":
-        await order_history(update, context)
+        rows = db.list_customer_orders(query.from_user.id, limit=10)
+        if not rows:
+            await _edit_or_send_callback_message(
+                query,
+                format_empty_order_history(),
+                parse_mode="HTML",
+                reply_markup=order_post_actions_keyboard(),
+            )
+            return
+        await _edit_or_send_callback_message(
+            query,
+            format_order_history(rows),
+            parse_mode="HTML",
+            reply_markup=order_post_actions_keyboard(),
+        )
         return
 
     if action == "main_menu":
-        role = user_role(query.from_user.id)
-        await context.bot.send_message(
-            chat_id=query.from_user.id,
-            text="🏠 Main menu ready.",
-            reply_markup=home_keyboard(role),
-        )
+        await query.answer("Use the main menu buttons below.")
+        try:
+            await query.edit_message_reply_markup(reply_markup=None)
+        except Exception:
+            pass
 
 
 async def start_topup_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.pop("topup_mode", None)
+    if update.callback_query:
+        await _edit_or_send_callback_message(
+            update.callback_query,
+            format_topup_info(),
+            parse_mode="HTML",
+            reply_markup=topup_presets_keyboard(),
+        )
+        return
+
     await update.effective_message.reply_text(
         format_topup_info(),
         reply_markup=topup_presets_keyboard(),
@@ -1067,6 +1121,14 @@ async def start_topup_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def start_custom_topup_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["topup_mode"] = "await_amount"
+    if update.callback_query:
+        await _edit_or_send_callback_message(
+            update.callback_query,
+            format_topup_amount_prompt(),
+            parse_mode="HTML",
+        )
+        return
+
     await update.effective_message.reply_text(
         format_topup_amount_prompt(),
         parse_mode="HTML",
@@ -1079,7 +1141,7 @@ async def initialize_topup_for_user(
     amount: int,
     context: ContextTypes.DEFAULT_TYPE,
 ):
-    email = f"user{user.id}@primechop.local"
+    email = _checkout_customer_email(user)
     try:
         result = await payments.initialize_wallet_topup(
             amount=amount,
@@ -1169,8 +1231,8 @@ async def waiter_portal_callback(update: Update, context: ContextTypes.DEFAULT_T
     if action == "register":
         context.user_data["waiter_register_mode"] = True
         context.user_data.pop("waiter_login_mode", None)
-        await context.bot.send_message(
-            chat_id=query.from_user.id,
+        await _edit_or_send_callback_message(
+            query,
             text=(
                 "📝 <b>Waiter Registration</b>\n\n"
                 "Please provide your details in this format:\n\n"
@@ -1186,9 +1248,10 @@ async def waiter_portal_callback(update: Update, context: ContextTypes.DEFAULT_T
     if action == "login":
         context.user_data["waiter_login_mode"] = True
         context.user_data.pop("waiter_register_mode", None)
-        await context.bot.send_message(
-            chat_id=query.from_user.id,
+        await _edit_or_send_callback_message(
+            query,
             text="🔑 Waiter Login\n\nPlease enter your waiter code (example: WAI123).",
+            parse_mode=None,
         )
 
 
@@ -1352,8 +1415,8 @@ async def admin_waiter_management_callback(update: Update, context: ContextTypes
 
     action = query.data.split(":", 1)[1]
     if action == "menu":
-        await context.bot.send_message(
-            chat_id=user.id,
+        await _edit_or_send_callback_message(
+            query,
             text=f"{format_waiter_management_menu()}\n\n{build_waiter_management_stats()}",
             parse_mode="HTML",
             reply_markup=admin_waiter_management_keyboard(),
@@ -1509,8 +1572,8 @@ async def admin_panel_callback(update: Update, context: ContextTypes.DEFAULT_TYP
 
     data = query.data
     if data == "admin:menu":
-        await context.bot.send_message(
-            chat_id=user.id,
+        await _edit_or_send_callback_message(
+            query,
             text=format_admin_home(),
             parse_mode="HTML",
             reply_markup=admin_panel_keyboard(),
@@ -1518,8 +1581,8 @@ async def admin_panel_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         return
 
     if data == "admin:menu_waiters":
-        await context.bot.send_message(
-            chat_id=user.id,
+        await _edit_or_send_callback_message(
+            query,
             text=f"{format_waiter_management_menu()}\n\n{build_waiter_management_stats()}",
             parse_mode="HTML",
             reply_markup=admin_waiter_management_keyboard(),
@@ -1528,8 +1591,8 @@ async def admin_panel_callback(update: Update, context: ContextTypes.DEFAULT_TYP
 
     if data == "admin:menu_analytics" or data == "admin:order_analytics":
         report = db.order_analytics(limit=5)
-        await context.bot.send_message(
-            chat_id=user.id,
+        await _edit_or_send_callback_message(
+            query,
             text=format_order_analytics_dashboard(report),
             parse_mode="HTML",
             reply_markup=admin_analytics_keyboard(),
@@ -1538,8 +1601,8 @@ async def admin_panel_callback(update: Update, context: ContextTypes.DEFAULT_TYP
 
     if data == "admin:waiter_analytics":
         rows = db.waiter_performance(limit=30)
-        await context.bot.send_message(
-            chat_id=user.id,
+        await _edit_or_send_callback_message(
+            query,
             text=format_waiter_analytics_dashboard(rows),
             parse_mode="HTML",
             reply_markup=admin_panel_keyboard(),
@@ -1549,8 +1612,8 @@ async def admin_panel_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     if data == "admin:menu_catalog":
         vendors = db.list_vendors()
         items = db.list_menu_items()
-        await context.bot.send_message(
-            chat_id=user.id,
+        await _edit_or_send_callback_message(
+            query,
             text=f"{format_catalog_menu()}\n\n{format_catalog_summary(vendors, items)}",
             parse_mode="HTML",
             reply_markup=admin_catalog_keyboard(),
@@ -1559,8 +1622,8 @@ async def admin_panel_callback(update: Update, context: ContextTypes.DEFAULT_TYP
 
     if data == "admin:catalog_list_vendors":
         vendors = db.list_vendors()
-        await context.bot.send_message(
-            chat_id=user.id,
+        await _edit_or_send_callback_message(
+            query,
             text=format_catalog_vendors(vendors),
             parse_mode="HTML",
             reply_markup=admin_catalog_keyboard(),
@@ -1570,8 +1633,8 @@ async def admin_panel_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     if data == "admin:catalog_summary":
         vendors = db.list_vendors()
         items = db.list_menu_items()
-        await context.bot.send_message(
-            chat_id=user.id,
+        await _edit_or_send_callback_message(
+            query,
             text=format_catalog_summary(vendors, items),
             parse_mode="HTML",
             reply_markup=admin_catalog_keyboard(),
@@ -1579,8 +1642,8 @@ async def admin_panel_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         return
 
     if data == "admin:catalog_additem_help":
-        await context.bot.send_message(
-            chat_id=user.id,
+        await _edit_or_send_callback_message(
+            query,
             text=format_admin_additem_help(),
             parse_mode="HTML",
             reply_markup=admin_catalog_keyboard(),
@@ -1598,8 +1661,8 @@ async def admin_panel_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             items_with_vendors.append(item_copy)
         
         text = format_catalog_items_list(items_with_vendors)
-        await context.bot.send_message(
-            chat_id=user.id,
+        await _edit_or_send_callback_message(
+            query,
             text=text,
             parse_mode="HTML",
             reply_markup=admin_catalog_keyboard(),
@@ -1625,8 +1688,8 @@ async def admin_panel_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         db.delete_menu_item(item_id)
         
         text = format_item_removed_success(item["name"])
-        await context.bot.send_message(
-            chat_id=user.id,
+        await _edit_or_send_callback_message(
+            query,
             text=text,
             parse_mode="HTML",
             reply_markup=admin_catalog_keyboard(),
@@ -1656,8 +1719,8 @@ async def admin_panel_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         return
 
     if data == "admin:menu_quick":
-        await context.bot.send_message(
-            chat_id=user.id,
+        await _edit_or_send_callback_message(
+            query,
             text=format_admin_quick_actions(),
             parse_mode="HTML",
             reply_markup=admin_quick_actions_keyboard(),
@@ -2087,7 +2150,7 @@ async def order_room_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
     room_number = None
     hall_prefixed = re.fullmatch(r"[A-H](\d{1,4})", room_text)
     if hall_prefixed:
-        room_number = hall_prefixed.group(1)
+        room_number = room_text
     elif re.fullmatch(r"\d{1,4}", room_text):
         room_number = room_text
 
