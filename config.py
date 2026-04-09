@@ -55,6 +55,11 @@ def _parse_bool(raw: str, default: bool = False) -> bool:
 @dataclass(frozen=True)
 class Settings:
     telegram_bot_token: str
+    webhook_enabled: bool
+    webhook_base_url: str
+    webhook_path: str
+    webhook_listen_host: str
+    webhook_port: int
     admin_ids: Set[int]
     waiter_ids: Set[int]
     bot_timezone: str
@@ -88,6 +93,11 @@ class Settings:
 
 settings = Settings(
     telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", "").strip(),
+    webhook_enabled=_parse_bool(os.getenv("WEBHOOK_ENABLED", "false"), default=False),
+    webhook_base_url=os.getenv("WEBHOOK_BASE_URL", "").strip().rstrip("/"),
+    webhook_path=(os.getenv("WEBHOOK_PATH", "/telegram/webhook").strip() or "/telegram/webhook"),
+    webhook_listen_host=os.getenv("WEBHOOK_LISTEN_HOST", "0.0.0.0").strip(),
+    webhook_port=int(os.getenv("WEBHOOK_PORT", os.getenv("PORT", "8080"))),
     admin_ids=_parse_ids(os.getenv("ADMIN_IDS", "")),
     waiter_ids=_parse_ids(os.getenv("WAITER_IDS", "")),
     bot_timezone=os.getenv("BOT_TIMEZONE", "Africa/Lagos").strip(),

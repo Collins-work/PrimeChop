@@ -35,6 +35,10 @@ KoraPay:
 - `KORAPAY_MODE=mock` for simulation
 - Set `KORAPAY_MODE=live` and real keys/endpoint to integrate
 
+Telegram delivery mode:
+- `WEBHOOK_ENABLED=false` uses polling (good for worker deployment)
+- `WEBHOOK_ENABLED=true` uses webhooks (requires public HTTPS URL)
+
 Service fee:
 - `SERVICE_FEE_TOTAL=500`
 - `SERVICE_FEE_SPLIT_MODE=equal` for 250/250
@@ -46,6 +50,20 @@ Service fee:
 ```powershell
 python app.py
 ```
+
+### Webhook Mode (Render Web Service)
+
+To switch from polling to Telegram webhooks:
+
+- `WEBHOOK_ENABLED=true`
+- `WEBHOOK_BASE_URL=https://<your-render-service>.onrender.com`
+- `WEBHOOK_PATH=/telegram/webhook` (or any path you prefer)
+- `WEBHOOK_PORT` should match Render `PORT` (the app auto-falls back to `PORT` when set)
+
+Render notes:
+- Deploy as a **Web Service**.
+- Start command stays `python app.py`.
+- Keep `WEBHOOK_BASE_URL` set to your public HTTPS service URL.
 
 ## 4) Commands
 

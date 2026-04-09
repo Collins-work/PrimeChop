@@ -280,6 +280,22 @@ class Database:
                 "SELECT * FROM vendors WHERE active=1 ORDER BY id ASC"
             ).fetchall()
 
+    def list_vendors_with_active_items(self) -> list[sqlite3.Row]:
+        with self.connection() as conn:
+            return conn.execute(
+                """
+                SELECT v.*
+                FROM vendors v
+                WHERE v.active=1
+                  AND EXISTS (
+                      SELECT 1
+                      FROM menu_items m
+                      WHERE m.vendor_id = v.id AND m.active=1
+                  )
+                ORDER BY v.id ASC
+                """
+            ).fetchall()
+
     def get_vendor(self, vendor_id: int) -> Optional[sqlite3.Row]:
         with self.connection() as conn:
             return conn.execute("SELECT * FROM vendors WHERE id=? AND active=1", (vendor_id,)).fetchone()

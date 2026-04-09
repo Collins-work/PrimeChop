@@ -43,6 +43,15 @@ class KoraPayClient:
                 checkout_url=f"https://checkout.mock.korapay.test/pay/{tx_ref}",
             )
 
+        missing_fields = []
+        if not self.secret_key:
+            missing_fields.append("KORAPAY_SECRET_KEY")
+        if not self.callback_url:
+            missing_fields.append("KORAPAY_CALLBACK_URL")
+        if missing_fields:
+            missing_csv = ", ".join(missing_fields)
+            raise RuntimeError(f"KoraPay live mode is missing required settings: {missing_csv}")
+
         payload = {
             "amount": amount,
             "currency": self.currency,

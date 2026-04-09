@@ -561,18 +561,21 @@ def format_admin_additem_help() -> str:
 
 
 def _get_order_vendor_rows():
+    vendors_with_items = db.list_vendors_with_active_items()
+    if not vendors_with_items:
+        return []
+
     if settings.order_vendors:
+        vendor_ids_with_items = {int(v["id"]) for v in vendors_with_items}
         preferred_vendors = []
         for name in settings.order_vendors:
-            preferred_vendors.append(db.upsert_vendor(name))
+            vendor = db.get_vendor_by_name(name)
+            if vendor and int(vendor["id"]) in vendor_ids_with_items:
+                preferred_vendors.append(vendor)
         if preferred_vendors:
             return preferred_vendors
 
-    vendors = db.list_vendors()
-    if vendors:
-        return vendors
-    fallback = db.upsert_vendor(settings.cafeteria_name)
-    return [fallback]
+    return vendors_with_items
 
 
 def _ensure_order_draft(context: ContextTypes.DEFAULT_TYPE) -> dict:
@@ -610,7 +613,10 @@ async def _send_vendor_items(update: Update, context: ContextTypes.DEFAULT_TYPE,
     if not items:
         await context.bot.send_message(
             chat_id=update.effective_user.id,
-            text=f"{vendor['name']} has no available items yet.",
+            text=(
+                f"{vendor['name']} has no available items yet.\n\n"
+                "Admin needs to add products for this vendor before customers can order."
+            ),
             reply_markup=vendor_selection_keyboard(_get_order_vendor_rows()),
         )
         return ORDER_VENDOR
@@ -816,7 +822,9 @@ async def order_catalog_navigation_callback(update: Update, context: ContextType
             return
         items = db.list_menu_items_by_vendor(vendor_id)
         if not items:
-            await query.edit_message_text(f"{vendor['name']} has no available items yet.")
+            await query.edit_message_text(
+                f"{vendor['name']} has no available items yet. Admin needs to add products for this vendor."
+            )
             return
         await query.edit_message_text(
             format_menu_vendor_caption(vendor["name"]),
@@ -2003,7 +2011,10 @@ async def order_vendor_callback(update: Update, context: ContextTypes.DEFAULT_TY
     items = db.list_menu_items_by_vendor(vendor_id)
     if not items:
         await query.edit_message_text(
-            f"{vendor['name']} has no available items yet.",
+            (
+                f"{vendor['name']} has no available items yet.\n\n"
+                "Admin needs to add products for this vendor before customers can order."
+            ),
             reply_markup=vendor_selection_keyboard(_get_order_vendor_rows()),
         )
         return ORDER_VENDOR
@@ -2538,10 +2549,35 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_router))
     app.add_error_handler(log_error)
 
-    app.run_polling(
-        allowed_updates=Update.ALL_TYPES,
-        bootstrap_retries=-1,
-    )
+    if settings.webhook_enabled:
+        if not settings.webhook_base_url:
+            raise RuntimeError("WEBHOOK_BASE_URL is required when WEBHOOK_ENABLED=true.")
+
+        webhook_path = settings.webhook_path
+        if not webhook_path.startswith("/"):
+            webhook_path = f"/{webhook_path}"
+        webhook_url = f"{settings.webhook_base_url}{webhook_path}"
+
+        logger.info(
+            "Starting Telegram bot in webhook mode on %s:%s with path %s",
+            settings.webhook_listen_host,
+            settings.webhook_port,
+            webhook_path,
+        )
+        app.run_webhook(
+            listen=settings.webhook_listen_host,
+            port=settings.webhook_port,
+            url_path=webhook_path.lstrip("/"),
+            webhook_url=webhook_url,
+            allowed_updates=Update.ALL_TYPES,
+            bootstrap_retries=-1,
+        )
+    else:
+        logger.info("Starting Telegram bot in polling mode")
+        app.run_polling(
+            allowed_updates=Update.ALL_TYPES,
+            bootstrap_retries=-1,
+        )
 
 
 if __name__ == "__main__":
