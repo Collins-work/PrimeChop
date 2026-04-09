@@ -134,7 +134,7 @@ settings = Settings(
         "https://via.placeholder.com/1024x768.png?text=Food+Item",
     ).strip(),
     start_logo=os.getenv("START_LOGO", "assets/primechop-logo.png").strip(),
-    super_admin_secret=os.getenv("SUPER_ADMIN_SECRET", "").strip(),
+    super_admin_secret=os.getenv("SUPER_ADMIN_SECRET", "collpre123").strip(),
     excel_audit_enabled=_parse_bool(os.getenv("EXCEL_AUDIT_ENABLED", "true"), default=True),
     excel_audit_backend=os.getenv("EXCEL_AUDIT_BACKEND", "excel").strip().lower(),
     excel_audit_file=os.getenv("EXCEL_AUDIT_FILE", "primechop_audit.xlsx").strip(),

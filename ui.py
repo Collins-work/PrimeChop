@@ -84,6 +84,18 @@ def topup_presets_keyboard() -> InlineKeyboardMarkup:
     )
 
 
+def payment_method_keyboard(order_ref: str, wallet_balance: int, amount: int) -> InlineKeyboardMarkup:
+    """Build payment options keyboard for checkout."""
+    rows = []
+    if wallet_balance >= amount:
+        rows.append([InlineKeyboardButton(f"👛 Pay with Wallet (₦{wallet_balance:,})", callback_data=f"checkout:wallet:{order_ref}")])
+    else:
+        rows.append([InlineKeyboardButton("💳 Top up wallet", callback_data="topup:start")])
+    rows.append([InlineKeyboardButton("💳 Pay with KoraPay", callback_data=f"checkout:korapay:{order_ref}")])
+    rows.append([InlineKeyboardButton("❌ Cancel checkout", callback_data=f"checkout:cancel:{order_ref}")])
+    return InlineKeyboardMarkup(rows)
+
+
 def wallet_actions_keyboard() -> InlineKeyboardMarkup:
     """Build wallet action buttons."""
     return InlineKeyboardMarkup([])
@@ -548,6 +560,58 @@ def format_wallet_info(balance: int, user_name: str) -> str:
         f"{EMOJI_CUSTOMER} <b>User:</b> {user_name}\n"
         f"{EMOJI_MONEY} <b>Balance:</b> ₦{balance:,}\n\n"
         f"<i>Top up with card via KoraPay to add funds directly to your wallet.</i>"
+    )
+
+
+def format_wallet_transactions(rows) -> str:
+    """Format recent wallet transactions."""
+    if not rows:
+        return "\n\nNo wallet transactions yet."
+
+    lines = ["", "🧾 <b>Recent Wallet Activity</b>"]
+    for row in rows:
+        amount = int(row["amount"] or 0)
+        amount_label = f"+₦{amount:,}" if amount > 0 else f"-₦{abs(amount):,}"
+        tx_type = (row["tx_type"] or "tx").replace("_", " ").title()
+        status = (row["status"] or "").title()
+        tx_ref = row["tx_ref"] or f"TX{row['id']}"
+        lines.append(f"• {tx_type}: <b>{amount_label}</b> ({status})")
+        lines.append(f"  Ref: {tx_ref}")
+    return "\n".join(lines)
+
+
+def format_checkout_payment_choice(
+    order_ref: str,
+    vendor_name: str,
+    item_name: str,
+    hall_name: str,
+    room_number: str,
+    amount: int,
+    wallet_balance: int,
+) -> str:
+    """Format payment choice prompt after order details are captured."""
+    sufficiency = "enough" if wallet_balance >= amount else "not enough"
+    return (
+        "💸 <b>Choose Payment Method</b>\n\n"
+        f"📦 <b>Order ID:</b> #{order_ref}\n"
+        f"🏪 <b>Vendor:</b> {vendor_name}\n"
+        f"🍽️ <b>Item:</b> {item_name}\n"
+        f"🏫 <b>Delivery:</b> {hall_name} - Room {room_number}\n"
+        f"💰 <b>Amount:</b> ₦{amount:,}\n"
+        f"👛 <b>Wallet Balance:</b> ₦{wallet_balance:,} ({sufficiency})\n\n"
+        "Choose wallet or card checkout below."
+    )
+
+
+def format_wallet_insufficient(balance: int, amount: int) -> str:
+    """Format wallet insufficient funds warning."""
+    shortfall = max(0, amount - balance)
+    return (
+        "❌ <b>Insufficient Wallet Balance</b>\n\n"
+        f"Wallet: ₦{balance:,}\n"
+        f"Required: ₦{amount:,}\n"
+        f"Shortfall: ₦{shortfall:,}\n\n"
+        "Top up your wallet or pay with KoraPay card checkout."
     )
 
 

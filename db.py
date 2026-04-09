@@ -216,6 +216,12 @@ class Database:
                 """
             )
             conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_wallet_transactions_user_id ON wallet_transactions(user_id)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_wallet_transactions_tx_ref ON wallet_transactions(tx_ref)"
+            )
+            conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS waiter_requests (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1044,3 +1050,84 @@ class Database:
                 (tx["amount"], now, tx["user_id"]),
             )
             return tx
+
+    def list_wallet_transactions(self, user_id: int, limit: int = 10) -> list[sqlite3.Row]:
+        with self.connection() as conn:
+            return conn.execute(
+                """
+                SELECT id, amount, tx_type, tx_ref, status, created_at
+                FROM wallet_transactions
+                WHERE user_id=?
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (user_id, limit),
+            ).fetchall()
+
+    def create_order_paid_with_wallet(
+        self,
+        *,
+        order_ref: str,
+        user_id: int,
+        item_id: int,
+        cafeteria_name: str,
+        amount: int,
+        order_details: str,
+        room_number: str,
+        delivery_time: str,
+        hall_name: str,
+        service_fee_total: int,
+        waiter_share: int,
+        platform_share: int,
+        wallet_tx_ref: str,
+    ) -> Optional[int]:
+        now = self.now_iso()
+        with self.connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            debit = conn.execute(
+                """
+                UPDATE users
+                SET wallet_balance = wallet_balance - ?, updated_at=?
+                WHERE user_id=? AND wallet_balance >= ?
+                """,
+                (amount, now, user_id, amount),
+            )
+            if debit.rowcount != 1:
+                return None
+
+            cursor = conn.execute(
+                """
+                INSERT INTO orders (
+                    order_ref, customer_id, item_id, cafeteria_name, amount,
+                    order_details, room_number, delivery_time, hall_name, status, payment_method, payment_provider, payment_tx_ref, payment_link, waiter_id,
+                    service_fee_total, waiter_share, platform_share, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending_waiter', 'wallet', 'wallet', ?, NULL, NULL, ?, ?, ?, ?, ?)
+                """,
+                (
+                    order_ref,
+                    user_id,
+                    item_id,
+                    cafeteria_name,
+                    amount,
+                    order_details,
+                    room_number,
+                    delivery_time,
+                    hall_name,
+                    wallet_tx_ref,
+                    service_fee_total,
+                    waiter_share,
+                    platform_share,
+                    now,
+                    now,
+                ),
+            )
+
+            conn.execute(
+                """
+                INSERT INTO wallet_transactions (
+                    user_id, amount, tx_type, tx_ref, payment_link, status, created_at, updated_at
+                ) VALUES (?, ?, 'order_payment', ?, NULL, 'success', ?, ?)
+                """,
+                (user_id, -amount, wallet_tx_ref, now, now),
+            )
+            return int(cursor.lastrowid)

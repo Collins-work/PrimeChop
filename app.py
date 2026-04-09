@@ -80,17 +80,21 @@ from ui import (
     format_topup_created,
     format_topup_info,
     format_topup_success,
+    format_wallet_insufficient,
+    format_wallet_transactions,
     format_unauthorized,
     format_waiter_offline_success,
     format_waiter_online_success,
     format_waiter_order_alert,
     format_view_cart,
     format_wallet_info,
+    format_checkout_payment_choice,
     home_keyboard,
     hall_selection_keyboard,
     menu_item_keyboard,
     order_claim_keyboard,
     order_post_actions_keyboard,
+    payment_method_keyboard,
     pay_now_keyboard,
     start_place_order_keyboard,
     vendor_items_keyboard,
@@ -496,6 +500,12 @@ def generate_order_ref() -> str:
     raise RuntimeError("Unable to generate a unique order reference.")
 
 
+def generate_wallet_tx_ref(user_id: int) -> str:
+    alphabet = string.ascii_lowercase + string.digits
+    suffix = "".join(random.choice(alphabet) for _ in range(8))
+    return f"walletpay_{user_id}_{suffix}"
+
+
 def generate_waiter_code() -> str:
     for _ in range(100):
         code = f"WAI{random.randint(100, 999)}"
@@ -753,69 +763,194 @@ async def _finalize_order_checkout(update: Update, context: ContextTypes.DEFAULT
     hall_name = draft["hall_name"]
     room_number = draft["room_number"]
     amount = int(draft["amount"])
+    user_row = db.get_user(user.id)
+    wallet_balance = int(user_row["wallet_balance"] or 0) if user_row else 0
 
-    try:
-        payment_result = await payments.initialize_order_checkout(
-            amount=amount,
-            email=_checkout_customer_email(user),
-            full_name=user.full_name,
-            user_id=user.id,
-            order_ref=order_ref,
-        )
-    except Exception as exc:
-        logger.exception("Order payment initialization failed")
-        await update.effective_message.reply_text(
-            format_error_message(f"Unable to start payment right now: {exc}"),
-            parse_mode="HTML",
-        )
-        return ConversationHandler.END
-
-    waiter_share, platform_share = service_fee_split(
-        settings.service_fee_total,
-        settings.service_fee_split_mode,
-    )
-    order_id = db.create_order(
-        order_ref=order_ref,
-        customer_id=user.id,
-        item_id=draft["item_id"],
-        cafeteria_name=vendor_name,
-        amount=amount,
-        order_details=draft.get("order_details", ""),
-        room_number=room_number,
-        delivery_time="",
-        hall_name=hall_name,
-        status="pending_payment",
-        payment_method=payments.provider_name(),
-        payment_provider=payments.provider_name(),
-        payment_tx_ref=payment_result.tx_ref,
-        payment_link=payment_result.checkout_url,
-        service_fee_total=settings.service_fee_total,
-        waiter_share=waiter_share,
-        platform_share=platform_share,
-    )
-    _audit_order_event(db.get_order(order_id), event="order_created", payment_status="pending")
+    context.user_data["pending_checkout"] = {
+        "order_ref": order_ref,
+        "vendor_name": vendor_name,
+        "item_name": item_name,
+        "hall_name": hall_name,
+        "room_number": room_number,
+        "amount": amount,
+        "item_id": int(draft["item_id"]),
+        "order_details": draft.get("order_details", ""),
+    }
 
     await update.effective_message.reply_text(
-        format_order_payment_ready(
+        format_checkout_payment_choice(
             order_ref=order_ref,
             vendor_name=vendor_name,
             item_name=item_name,
             hall_name=hall_name,
             room_number=room_number,
             amount=amount,
-            payment_provider=payments.provider_name(),
+            wallet_balance=wallet_balance,
         ),
         parse_mode="HTML",
-        reply_markup=pay_now_keyboard(payment_result.checkout_url, label="💳 Pay with Korapay"),
+        reply_markup=payment_method_keyboard(order_ref, wallet_balance, amount),
     )
-
-    if settings.korapay_mode == "mock":
-        await update.effective_message.reply_text(
-            f"Mock mode is active. Admin can confirm this payment with /confirm_order {payment_result.tx_ref}.",
-        )
-
     context.user_data.pop("order_draft", None)
     return ConversationHandler.END
+
+
+async def checkout_payment_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    parts = query.data.split(":")
+    if len(parts) != 3:
+        await query.answer("Invalid payment action.", show_alert=True)
+        return
+
+    action = parts[1]
+    requested_order_ref = parts[2]
+    pending = context.user_data.get("pending_checkout")
+    if not pending:
+        await _edit_or_send_callback_message(
+            query,
+            "Checkout session expired. Please place the order again.",
+            parse_mode="HTML",
+        )
+        return
+
+    if pending.get("order_ref") != requested_order_ref:
+        await query.answer("This checkout link has expired.", show_alert=True)
+        return
+
+    user = query.from_user
+    user_row = db.get_user(user.id)
+    wallet_balance = int(user_row["wallet_balance"] or 0) if user_row else 0
+
+    waiter_share, platform_share = service_fee_split(
+        settings.service_fee_total,
+        settings.service_fee_split_mode,
+    )
+
+    if action == "cancel":
+        context.user_data.pop("pending_checkout", None)
+        await _edit_or_send_callback_message(
+            query,
+            "Checkout cancelled. You can place a new order anytime.",
+            parse_mode="HTML",
+        )
+        return
+
+    if action == "wallet":
+        amount = int(pending["amount"])
+        if wallet_balance < amount:
+            await _edit_or_send_callback_message(
+                query,
+                format_wallet_insufficient(wallet_balance, amount),
+                parse_mode="HTML",
+                reply_markup=payment_method_keyboard(requested_order_ref, wallet_balance, amount),
+            )
+            return
+
+        wallet_tx_ref = generate_wallet_tx_ref(user.id)
+        order_id = db.create_order_paid_with_wallet(
+            order_ref=requested_order_ref,
+            user_id=user.id,
+            item_id=int(pending["item_id"]),
+            cafeteria_name=pending["vendor_name"],
+            amount=amount,
+            order_details=pending.get("order_details", ""),
+            room_number=pending["room_number"],
+            delivery_time="",
+            hall_name=pending["hall_name"],
+            service_fee_total=settings.service_fee_total,
+            waiter_share=waiter_share,
+            platform_share=platform_share,
+            wallet_tx_ref=wallet_tx_ref,
+        )
+        if not order_id:
+            refreshed = db.get_user(user.id)
+            refreshed_balance = int(refreshed["wallet_balance"] or 0) if refreshed else 0
+            await _edit_or_send_callback_message(
+                query,
+                format_wallet_insufficient(refreshed_balance, amount),
+                parse_mode="HTML",
+                reply_markup=payment_method_keyboard(requested_order_ref, refreshed_balance, amount),
+            )
+            return
+
+        order = db.get_order(order_id)
+        _audit_order_event(order, event="order_created", payment_status="confirmed")
+        context.user_data.pop("pending_checkout", None)
+        await _edit_or_send_callback_message(
+            query,
+            "✅ <b>Wallet Payment Successful</b>\n\nYour wallet has been debited and your order is now being dispatched to available waiters.",
+            parse_mode="HTML",
+        )
+        await _dispatch_paid_order(order, context)
+        return
+
+    if action == "korapay":
+        amount = int(pending["amount"])
+        try:
+            payment_result = await payments.initialize_order_checkout(
+                amount=amount,
+                email=_checkout_customer_email(user),
+                full_name=user.full_name,
+                user_id=user.id,
+                order_ref=requested_order_ref,
+            )
+        except Exception as exc:
+            logger.exception("Order payment initialization failed")
+            await _edit_or_send_callback_message(
+                query,
+                format_error_message(f"Unable to start payment right now: {exc}"),
+                parse_mode="HTML",
+                reply_markup=payment_method_keyboard(requested_order_ref, wallet_balance, amount),
+            )
+            return
+
+        order_id = db.create_order(
+            order_ref=requested_order_ref,
+            customer_id=user.id,
+            item_id=int(pending["item_id"]),
+            cafeteria_name=pending["vendor_name"],
+            amount=amount,
+            order_details=pending.get("order_details", ""),
+            room_number=pending["room_number"],
+            delivery_time="",
+            hall_name=pending["hall_name"],
+            status="pending_payment",
+            payment_method=payments.provider_name(),
+            payment_provider=payments.provider_name(),
+            payment_tx_ref=payment_result.tx_ref,
+            payment_link=payment_result.checkout_url,
+            service_fee_total=settings.service_fee_total,
+            waiter_share=waiter_share,
+            platform_share=platform_share,
+        )
+        _audit_order_event(db.get_order(order_id), event="order_created", payment_status="pending")
+        context.user_data.pop("pending_checkout", None)
+
+        await _edit_or_send_callback_message(
+            query,
+            format_order_payment_ready(
+                order_ref=requested_order_ref,
+                vendor_name=pending["vendor_name"],
+                item_name=pending["item_name"],
+                hall_name=pending["hall_name"],
+                room_number=pending["room_number"],
+                amount=amount,
+                payment_provider=payments.provider_name(),
+            ),
+            parse_mode="HTML",
+            reply_markup=pay_now_keyboard(payment_result.checkout_url, label="💳 Pay with Korapay"),
+        )
+
+        if settings.korapay_mode == "mock":
+            await context.bot.send_message(
+                chat_id=user.id,
+                text=f"Mock mode is active. Admin can confirm this payment with /confirm_order {payment_result.tx_ref}.",
+            )
+        return
+
+    await query.answer("Unsupported payment action.", show_alert=True)
+    return
 
 
 async def _dispatch_paid_order(order_row, context: ContextTypes.DEFAULT_TYPE):
@@ -2057,7 +2192,8 @@ async def wallet(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     row = db.get_user(user.id)
     balance = row["wallet_balance"] if row else 0
-    text = format_wallet_info(balance, user.full_name)
+    tx_rows = db.list_wallet_transactions(user.id, limit=8)
+    text = format_wallet_info(balance, user.full_name) + format_wallet_transactions(tx_rows)
     await update.effective_message.reply_text(text, parse_mode="HTML")
 
 
@@ -2625,6 +2761,7 @@ def main():
                 BotCommand("terms", "View terms and conditions"),
                 BotCommand("clear", "Clear recent chat messages"),
                 BotCommand("wallet", "Check wallet balance"),
+                BotCommand("topup", "Top up wallet balance"),
                 BotCommand("menu", "Open food menu"),
                 BotCommand("confirm_order", "Confirm an order payment by tx ref"),
                 BotCommand("view_orders", "Waiter order book (available and claimed)"),
@@ -2707,6 +2844,7 @@ def main():
     app.add_handler(CallbackQueryHandler(claim_order_callback, pattern=r"^claim:\d+$"))
     app.add_handler(CallbackQueryHandler(topup_preset_callback, pattern=r"^topup:\d+$"))
     app.add_handler(CallbackQueryHandler(topup_action_callback, pattern=r"^topup:(start|custom)$"))
+    app.add_handler(CallbackQueryHandler(checkout_payment_callback, pattern=r"^checkout:(wallet|korapay|cancel):[a-z0-9]{7}$"))
     app.add_handler(CallbackQueryHandler(start_place_order_callback, pattern=r"^start:place_order$"))
     app.add_handler(CallbackQueryHandler(order_action_callback, pattern=r"^order_action:(my_orders|main_menu)$"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_router))
