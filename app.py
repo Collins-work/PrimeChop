@@ -1330,34 +1330,7 @@ async def send_start_banner(update: Update, role: str):
     message = update.effective_message
     welcome_text = format_start_message(settings.cafeteria_name)
     cta_keyboard = start_place_order_keyboard()
-    has_logo, logo_source = _resolve_logo_source()
-    sent_banner = False
-
-    if has_logo:
-        try:
-            if logo_source.startswith("http://") or logo_source.startswith("https://"):
-                await message.reply_photo(
-                    photo=logo_source,
-                    caption=welcome_text,
-                    parse_mode="HTML",
-                    reply_markup=cta_keyboard,
-                )
-                sent_banner = True
-
-            if not sent_banner:
-                with open(logo_source, "rb") as logo_file:
-                    await message.reply_photo(
-                        photo=logo_file,
-                        caption=welcome_text,
-                        parse_mode="HTML",
-                        reply_markup=cta_keyboard,
-                    )
-                    sent_banner = True
-        except Exception:
-            logger.exception("Unable to send logo on /start; falling back to text")
-
-    if not sent_banner:
-        await message.reply_text(welcome_text, parse_mode="HTML", reply_markup=cta_keyboard)
+    await message.reply_text(welcome_text, parse_mode="HTML", reply_markup=cta_keyboard)
 
     await message.reply_text("Choose an option below.", reply_markup=home_keyboard(role))
 
