@@ -559,7 +559,7 @@ def admin_catalog_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
             [InlineKeyboardButton("➕ Add Menu Item", callback_data="admin:catalog_additem_start")],
-            [InlineKeyboardButton("🍽️ View All Items", callback_data="admin:catalog_view_items")],
+            [InlineKeyboardButton("🍽️ Manage Items", callback_data="admin:catalog_view_items")],
             [InlineKeyboardButton("🏪 List Vendors", callback_data="admin:catalog_list_vendors")],
             [InlineKeyboardButton("📦 Catalog Summary", callback_data="admin:catalog_summary")],
             [InlineKeyboardButton("🔙 Back to Admin Home", callback_data="admin:menu")],
@@ -571,6 +571,9 @@ def admin_catalog_detail_keyboard(item_id: int) -> InlineKeyboardMarkup:
     """Keyboard for managing a specific menu item."""
     return InlineKeyboardMarkup(
         [
+            [InlineKeyboardButton(f"✏️ Edit Name #{item_id}", callback_data=f"admin:catalog_edit_name:{item_id}")],
+            [InlineKeyboardButton(f"💵 Edit Price #{item_id}", callback_data=f"admin:catalog_edit_price:{item_id}")],
+            [InlineKeyboardButton(f"🏪 Change Vendor #{item_id}", callback_data=f"admin:catalog_edit_vendor:{item_id}")],
             [InlineKeyboardButton(f"🗑️ Delete Item #{item_id}", callback_data=f"admin:catalog_remove:{item_id}")],
             [InlineKeyboardButton("📋 Back to Items List", callback_data="admin:catalog_view_items")],
             [InlineKeyboardButton("🔙 Back to Catalog Menu", callback_data="admin:menu_catalog")],
@@ -585,6 +588,24 @@ def admin_catalog_items_keyboard(items: list) -> InlineKeyboardMarkup:
         rows.append([InlineKeyboardButton(f"#{item['id']} - {item['name']}", callback_data=f"admin:catalog_item:{item['id']}")])
     rows.append([InlineKeyboardButton("🔙 Back to Catalog", callback_data="admin:menu_catalog")])
     return InlineKeyboardMarkup(rows)
+
+
+def admin_catalog_vendors_keyboard(vendors: list) -> InlineKeyboardMarkup:
+    rows = []
+    for vendor in vendors:
+        rows.append([InlineKeyboardButton(vendor["name"], callback_data=f"admin:catalog_vendor:{vendor['id']}")])
+    rows.append([InlineKeyboardButton("🔙 Back to Catalog", callback_data="admin:menu_catalog")])
+    return InlineKeyboardMarkup(rows)
+
+
+def admin_vendor_detail_keyboard(vendor_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("✏️ Rename Vendor", callback_data=f"admin:catalog_vendor_rename:{vendor_id}")],
+            [InlineKeyboardButton("🏪 Back to Vendors", callback_data="admin:catalog_list_vendors")],
+            [InlineKeyboardButton("🔙 Back to Catalog", callback_data="admin:menu_catalog")],
+        ]
+    )
 
 def admin_quick_actions_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
@@ -653,7 +674,26 @@ def format_catalog_menu() -> str:
     return (
         "🍽️ <b>Catalog Management</b>\n\n"
         "Manage vendor/menu setup from this section.\n"
-        "You can add new items, view active vendors, and check catalog totals."
+        "You can add, edit, and remove items, change prices, rename vendors, and check catalog totals."
+    )
+
+
+def format_admin_catalog_item_details(item, vendor_name: str) -> str:
+    return (
+        f"🍽️ <b>{item['name']}</b>\n"
+        f"<b>ID:</b> #{item['id']}\n"
+        f"<b>Vendor:</b> {vendor_name}\n"
+        f"<b>Price:</b> ₦{int(item['price'] or 0):,}\n\n"
+        "<i>Choose what to edit below.</i>"
+    )
+
+
+def format_admin_vendor_details(vendor, item_count: int) -> str:
+    return (
+        f"🏪 <b>{vendor['name']}</b>\n"
+        f"<b>ID:</b> #{vendor['id']}\n"
+        f"<b>Active Items:</b> {item_count}\n\n"
+        "<i>Use the button below to rename this vendor.</i>"
     )
 
 
@@ -1330,7 +1370,34 @@ async def send_start_banner(update: Update, role: str):
     message = update.effective_message
     welcome_text = format_start_message(settings.cafeteria_name)
     cta_keyboard = start_place_order_keyboard()
-    await message.reply_text(welcome_text, parse_mode="HTML", reply_markup=cta_keyboard)
+    has_logo, logo_source = _resolve_logo_source()
+    sent_banner = False
+
+    if has_logo:
+        try:
+            if logo_source.startswith("http://") or logo_source.startswith("https://"):
+                await message.reply_photo(
+                    photo=logo_source,
+                    caption=welcome_text,
+                    parse_mode="HTML",
+                    reply_markup=cta_keyboard,
+                )
+                sent_banner = True
+
+            if not sent_banner:
+                with open(logo_source, "rb") as logo_file:
+                    await message.reply_photo(
+                        photo=logo_file,
+                        caption=welcome_text,
+                        parse_mode="HTML",
+                        reply_markup=cta_keyboard,
+                    )
+                    sent_banner = True
+        except Exception:
+            logger.exception("Unable to send logo on /start; falling back to text")
+
+    if not sent_banner:
+        await message.reply_text(welcome_text, parse_mode="HTML", reply_markup=cta_keyboard)
 
     await message.reply_text("Choose an option below.", reply_markup=home_keyboard(role))
 
@@ -1854,9 +1921,132 @@ async def admin_deactivate_router(update: Update, context: ContextTypes.DEFAULT_
     )
 
 
+async def admin_catalog_edit_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    mode = context.user_data.get("admin_catalog_edit_mode")
+    if not mode:
+        return
+
+    user = update.effective_user
+    if not has_super_admin_access(user.id, context):
+        context.user_data.pop("admin_catalog_edit_mode", None)
+        await update.effective_message.reply_text("Run /admin and login first.")
+        return
+
+    input_text = (update.effective_message.text or "").strip()
+    if not input_text:
+        await update.effective_message.reply_text("Please send a valid value.")
+        return
+
+    mode_type = mode.get("type")
+
+    if mode_type == "item_name":
+        item_id = int(mode["item_id"])
+        updated = db.update_menu_item(item_id, name=input_text)
+        if not updated:
+            await update.effective_message.reply_text("Item not found or no changes were applied.")
+            return
+        context.user_data.pop("admin_catalog_edit_mode", None)
+        item = db.get_menu_item(item_id)
+        vendor = db.get_vendor(item["vendor_id"]) if item and item["vendor_id"] else None
+        vendor_name = vendor["name"] if vendor else "Unknown"
+        await update.effective_message.reply_text(
+            f"✅ Item name updated to <b>{input_text}</b>.",
+            parse_mode="HTML",
+        )
+        await update.effective_message.reply_text(
+            format_admin_catalog_item_details(item, vendor_name),
+            parse_mode="HTML",
+            reply_markup=admin_catalog_detail_keyboard(item_id),
+        )
+        return
+
+    if mode_type == "item_price":
+        item_id = int(mode["item_id"])
+        try:
+            new_price = int(input_text.replace(",", ""))
+            if new_price <= 0:
+                raise ValueError
+        except ValueError:
+            await update.effective_message.reply_text("Please send a valid positive price (example: 2500).")
+            return
+
+        updated = db.update_menu_item(item_id, price=new_price)
+        if not updated:
+            await update.effective_message.reply_text("Item not found or no changes were applied.")
+            return
+        context.user_data.pop("admin_catalog_edit_mode", None)
+        item = db.get_menu_item(item_id)
+        vendor = db.get_vendor(item["vendor_id"]) if item and item["vendor_id"] else None
+        vendor_name = vendor["name"] if vendor else "Unknown"
+        await update.effective_message.reply_text(
+            f"✅ Item price updated to <b>₦{new_price:,}</b>.",
+            parse_mode="HTML",
+        )
+        await update.effective_message.reply_text(
+            format_admin_catalog_item_details(item, vendor_name),
+            parse_mode="HTML",
+            reply_markup=admin_catalog_detail_keyboard(item_id),
+        )
+        return
+
+    if mode_type == "item_vendor":
+        item_id = int(mode["item_id"])
+        try:
+            vendor = db.upsert_vendor(input_text)
+        except ValueError:
+            await update.effective_message.reply_text("Please send a valid vendor name.")
+            return
+
+        updated = db.update_menu_item(item_id, vendor_id=int(vendor["id"]))
+        if not updated:
+            await update.effective_message.reply_text("Item not found or no changes were applied.")
+            return
+        context.user_data.pop("admin_catalog_edit_mode", None)
+        item = db.get_menu_item(item_id)
+        await update.effective_message.reply_text(
+            f"✅ Item vendor updated to <b>{vendor['name']}</b>.",
+            parse_mode="HTML",
+        )
+        await update.effective_message.reply_text(
+            format_admin_catalog_item_details(item, vendor["name"]),
+            parse_mode="HTML",
+            reply_markup=admin_catalog_detail_keyboard(item_id),
+        )
+        return
+
+    if mode_type == "vendor_name":
+        vendor_id = int(mode["vendor_id"])
+        try:
+            vendor = db.rename_vendor(vendor_id, input_text)
+        except ValueError:
+            await update.effective_message.reply_text("Please send a valid vendor name.")
+            return
+
+        if not vendor:
+            await update.effective_message.reply_text("Vendor not found.")
+            context.user_data.pop("admin_catalog_edit_mode", None)
+            return
+
+        context.user_data.pop("admin_catalog_edit_mode", None)
+        item_count = db.count_active_items_for_vendor(int(vendor["id"]))
+        await update.effective_message.reply_text(
+            f"✅ Vendor renamed to <b>{vendor['name']}</b>.",
+            parse_mode="HTML",
+        )
+        await update.effective_message.reply_text(
+            format_admin_vendor_details(vendor, item_count),
+            parse_mode="HTML",
+            reply_markup=admin_vendor_detail_keyboard(int(vendor["id"])),
+        )
+        return
+
+
 async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get("admin_login_mode"):
         await admin_login_router(update, context)
+        return
+    if context.user_data.get("admin_catalog_edit_mode"):
+        await admin_catalog_edit_router(update, context)
         return
     if context.user_data.get("topup_mode") == "await_amount":
         await topup_amount_step(update, context)
@@ -1948,7 +2138,7 @@ async def admin_panel_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             query,
             text=format_catalog_vendors(vendors),
             parse_mode="HTML",
-            reply_markup=admin_catalog_keyboard(),
+            reply_markup=admin_catalog_vendors_keyboard(vendors),
         )
         return
 
@@ -1973,21 +2163,61 @@ async def admin_panel_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         return
 
     if data == "admin:catalog_view_items":
-        items = db.list_menu_items()
-        vendors_map = {v["id"]: v["name"] for v in db.list_vendors()}
-        
-        items_with_vendors = []
-        for item in items:
-            item_copy = dict(item)
-            item_copy["vendor_name"] = vendors_map.get(item["vendor_id"], "Unknown")
-            items_with_vendors.append(item_copy)
-        
+        items_with_vendors = db.list_menu_items_with_vendor()
         text = format_catalog_items_list(items_with_vendors)
         await _edit_or_send_callback_message(
             query,
             text=text,
             parse_mode="HTML",
-            reply_markup=admin_catalog_keyboard(),
+            reply_markup=admin_catalog_items_keyboard(items_with_vendors),
+        )
+        return
+
+    if data.startswith("admin:catalog_vendor:"):
+        try:
+            vendor_id = int(data.split(":")[-1])
+        except (ValueError, IndexError):
+            await query.answer("Invalid vendor ID.", show_alert=True)
+            return
+
+        vendor = db.get_vendor(vendor_id)
+        if not vendor:
+            await query.answer("Vendor not found.", show_alert=True)
+            return
+
+        item_count = db.count_active_items_for_vendor(vendor_id)
+        await _edit_or_send_callback_message(
+            query,
+            text=format_admin_vendor_details(vendor, item_count),
+            parse_mode="HTML",
+            reply_markup=admin_vendor_detail_keyboard(vendor_id),
+        )
+        return
+
+    if data.startswith("admin:catalog_vendor_rename:"):
+        try:
+            vendor_id = int(data.split(":")[-1])
+        except (ValueError, IndexError):
+            await query.answer("Invalid vendor ID.", show_alert=True)
+            return
+
+        vendor = db.get_vendor(vendor_id)
+        if not vendor:
+            await query.answer("Vendor not found.", show_alert=True)
+            return
+
+        context.user_data["admin_catalog_edit_mode"] = {
+            "type": "vendor_name",
+            "vendor_id": vendor_id,
+        }
+        await _edit_or_send_callback_message(
+            query,
+            text=(
+                f"🏪 <b>Rename Vendor</b>\n\n"
+                f"Current name: <b>{vendor['name']}</b>\n\n"
+                "Send the new vendor name."
+            ),
+            parse_mode="HTML",
         )
         return
 
@@ -2029,14 +2259,91 @@ async def admin_panel_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         if not item:
             await query.answer("Item not found.", show_alert=True)
             return
-        
-        text = format_item_management_options(item_id, item["name"])
+
+        vendor = db.get_vendor(item["vendor_id"]) if item["vendor_id"] else None
+        vendor_name = vendor["name"] if vendor else "Unknown"
+        text = format_admin_catalog_item_details(item, vendor_name)
         await context.bot.edit_message_text(
             chat_id=user.id,
             message_id=query.message.message_id,
             text=text,
             parse_mode="HTML",
             reply_markup=admin_catalog_detail_keyboard(item_id),
+        )
+        return
+
+    if data.startswith("admin:catalog_edit_name:"):
+        try:
+            item_id = int(data.split(":")[-1])
+        except (ValueError, IndexError):
+            await query.answer("Invalid item ID.", show_alert=True)
+            return
+        if not db.get_menu_item(item_id):
+            await query.answer("Item not found.", show_alert=True)
+            return
+
+        context.user_data["admin_catalog_edit_mode"] = {
+            "type": "item_name",
+            "item_id": item_id,
+        }
+        await _edit_or_send_callback_message(
+            query,
+            text=(
+                f"✏️ <b>Edit Item Name</b>\n\n"
+                f"Item ID: <b>#{item_id}</b>\n"
+                "Send the new item name."
+            ),
+            parse_mode="HTML",
+        )
+        return
+
+    if data.startswith("admin:catalog_edit_price:"):
+        try:
+            item_id = int(data.split(":")[-1])
+        except (ValueError, IndexError):
+            await query.answer("Invalid item ID.", show_alert=True)
+            return
+        if not db.get_menu_item(item_id):
+            await query.answer("Item not found.", show_alert=True)
+            return
+
+        context.user_data["admin_catalog_edit_mode"] = {
+            "type": "item_price",
+            "item_id": item_id,
+        }
+        await _edit_or_send_callback_message(
+            query,
+            text=(
+                f"💵 <b>Edit Item Price</b>\n\n"
+                f"Item ID: <b>#{item_id}</b>\n"
+                "Send the new price in naira (example: 2500)."
+            ),
+            parse_mode="HTML",
+        )
+        return
+
+    if data.startswith("admin:catalog_edit_vendor:"):
+        try:
+            item_id = int(data.split(":")[-1])
+        except (ValueError, IndexError):
+            await query.answer("Invalid item ID.", show_alert=True)
+            return
+        if not db.get_menu_item(item_id):
+            await query.answer("Item not found.", show_alert=True)
+            return
+
+        context.user_data["admin_catalog_edit_mode"] = {
+            "type": "item_vendor",
+            "item_id": item_id,
+        }
+        await _edit_or_send_callback_message(
+            query,
+            text=(
+                f"🏪 <b>Change Item Vendor</b>\n\n"
+                f"Item ID: <b>#{item_id}</b>\n"
+                "Send an existing vendor name, or a new vendor name to create it."
+            ),
+            parse_mode="HTML",
         )
         return
 

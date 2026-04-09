@@ -676,12 +676,32 @@ class Database:
         with self.connection() as conn:
             return conn.execute("SELECT * FROM menu_items WHERE active=1 ORDER BY id ASC").fetchall()
 
+    def list_menu_items_with_vendor(self) -> list[sqlite3.Row]:
+        with self.connection() as conn:
+            return conn.execute(
+                """
+                SELECT m.*, COALESCE(v.name, 'Unknown') AS vendor_name
+                FROM menu_items m
+                LEFT JOIN vendors v ON v.id = m.vendor_id
+                WHERE m.active=1
+                ORDER BY m.id ASC
+                """
+            ).fetchall()
+
     def list_menu_items_by_vendor(self, vendor_id: int) -> list[sqlite3.Row]:
         with self.connection() as conn:
             return conn.execute(
                 "SELECT * FROM menu_items WHERE active=1 AND vendor_id=? ORDER BY id ASC",
                 (vendor_id,),
             ).fetchall()
+
+    def count_active_items_for_vendor(self, vendor_id: int) -> int:
+        with self.connection() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS count FROM menu_items WHERE active=1 AND vendor_id=?",
+                (vendor_id,),
+            ).fetchone()
+            return int(row["count"] or 0) if row else 0
 
     def assign_unassigned_menu_items(self, vendor_id: int):
         now = self.now_iso()
@@ -695,41 +715,87 @@ class Database:
         with self.connection() as conn:
             return conn.execute("SELECT * FROM menu_items WHERE id=?", (item_id,)).fetchone()
 
-        def deactivate_menu_item(self, item_id: int) -> bool:
-            """Soft delete a menu item (set active=0)."""
-            now = self.now_iso()
-            with self.connection() as conn:
-                cursor = conn.execute(
-                    "UPDATE menu_items SET active=0, updated_at=? WHERE id=?",
-                    (now, item_id),
+    def deactivate_menu_item(self, item_id: int) -> bool:
+        """Soft delete a menu item (set active=0)."""
+        now = self.now_iso()
+        with self.connection() as conn:
+            cursor = conn.execute(
+                "UPDATE menu_items SET active=0, updated_at=? WHERE id=?",
+                (now, item_id),
+            )
+            return cursor.rowcount > 0
+
+    def delete_menu_item(self, item_id: int) -> bool:
+        """Hard delete a menu item from database."""
+        with self.connection() as conn:
+            cursor = conn.execute("DELETE FROM menu_items WHERE id=?", (item_id,))
+            return cursor.rowcount > 0
+
+    def update_menu_item(self, item_id: int, **kwargs) -> bool:
+        """Update menu item fields. Supported: name, price, vendor_id, image_url, image_file_id, active."""
+        allowed_fields = {"name", "price", "vendor_id", "image_url", "image_file_id", "active"}
+        updates = {k: v for k, v in kwargs.items() if k in allowed_fields}
+        if not updates:
+            return False
+
+        now = self.now_iso()
+        updates["updated_at"] = now
+
+        set_clause = ", ".join(f"{k}=?" for k in updates.keys())
+        values = list(updates.values()) + [item_id]
+
+        with self.connection() as conn:
+            cursor = conn.execute(
+                f"UPDATE menu_items SET {set_clause} WHERE id=?",
+                values,
+            )
+            return cursor.rowcount > 0
+
+    def rename_vendor(self, vendor_id: int, new_name: str) -> Optional[sqlite3.Row]:
+        cleaned_name = self._normalize_vendor_name(new_name)
+        if not cleaned_name:
+            raise ValueError("Vendor name is required")
+
+        now = self.now_iso()
+        with self.connection() as conn:
+            vendor = conn.execute(
+                "SELECT * FROM vendors WHERE id=? AND active=1",
+                (vendor_id,),
+            ).fetchone()
+            if not vendor:
+                return None
+
+            existing = conn.execute(
+                "SELECT * FROM vendors WHERE name=? AND id<>? LIMIT 1",
+                (cleaned_name, vendor_id),
+            ).fetchone()
+
+            if existing:
+                conn.execute(
+                    "UPDATE menu_items SET vendor_id=?, updated_at=? WHERE vendor_id=?",
+                    (existing["id"], now, vendor_id),
                 )
-                return cursor.rowcount > 0
-
-        def delete_menu_item(self, item_id: int) -> bool:
-            """Hard delete a menu item from database."""
-            with self.connection() as conn:
-                cursor = conn.execute("DELETE FROM menu_items WHERE id=?", (item_id,))
-                return cursor.rowcount > 0
-
-        def update_menu_item(self, item_id: int, **kwargs) -> bool:
-            """Update menu item fields. Supported: name, price, image_url, image_file_id, active."""
-            allowed_fields = {"name", "price", "image_url", "image_file_id", "active"}
-            updates = {k: v for k, v in kwargs.items() if k in allowed_fields}
-            if not updates:
-                return False
-
-            now = self.now_iso()
-            updates["updated_at"] = now
-
-            set_clause = ", ".join(f"{k}=?" for k in updates.keys())
-            values = list(updates.values()) + [item_id]
-
-            with self.connection() as conn:
-                cursor = conn.execute(
-                    f"UPDATE menu_items SET {set_clause} WHERE id=?",
-                    values,
+                conn.execute(
+                    "UPDATE vendors SET active=1, updated_at=? WHERE id=?",
+                    (now, existing["id"]),
                 )
-                return cursor.rowcount > 0
+                conn.execute(
+                    "UPDATE vendors SET active=0, updated_at=? WHERE id=?",
+                    (now, vendor_id),
+                )
+                return conn.execute(
+                    "SELECT * FROM vendors WHERE id=?",
+                    (existing["id"],),
+                ).fetchone()
+
+            conn.execute(
+                "UPDATE vendors SET name=?, updated_at=? WHERE id=?",
+                (cleaned_name, now, vendor_id),
+            )
+            return conn.execute(
+                "SELECT * FROM vendors WHERE id=?",
+                (vendor_id,),
+            ).fetchone()
 
     def create_order(
         self,

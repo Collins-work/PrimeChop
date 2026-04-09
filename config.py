@@ -83,6 +83,7 @@ class Settings:
     excel_audit_enabled: bool
     excel_audit_backend: str
     excel_audit_file: str
+    excel_audit_sqlite_db: str
     google_sheets_spreadsheet_id: str
     google_sheets_credentials_file: str
     google_sheets_order_sheet: str
@@ -137,8 +138,9 @@ settings = Settings(
     start_logo=os.getenv("START_LOGO", "assets/primechop-logo.png").strip(),
     super_admin_secret=os.getenv("SUPER_ADMIN_SECRET", "collpre123").strip(),
     excel_audit_enabled=_parse_bool(os.getenv("EXCEL_AUDIT_ENABLED", "true"), default=True),
-    excel_audit_backend=os.getenv("EXCEL_AUDIT_BACKEND", "excel").strip().lower(),
+    excel_audit_backend=os.getenv("EXCEL_AUDIT_BACKEND", "sqlite").strip().lower(),
     excel_audit_file=os.getenv("EXCEL_AUDIT_FILE", "primechop_audit.xlsx").strip(),
+    excel_audit_sqlite_db=os.getenv("EXCEL_AUDIT_SQLITE_DB", "primechop.db").strip(),
     google_sheets_spreadsheet_id=os.getenv("GOOGLE_SHEETS_SPREADSHEET_ID", "").strip(),
     google_sheets_credentials_file=os.getenv("GOOGLE_SHEETS_CREDENTIALS_FILE", "").strip(),
     google_sheets_order_sheet=os.getenv("GOOGLE_SHEETS_ORDER_SHEET", "OrdersAudit").strip(),

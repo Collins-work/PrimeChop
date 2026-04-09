@@ -107,16 +107,21 @@ Ordering flow:
 6. The bot initializes Korapay checkout and stores the order as pending payment.
 7. After payment is confirmed, the order is released to waiters.
 
-## 6) Audit Trail (Excel or Google Sheets)
+## 6) Audit Trail (SQLite, Excel, or Google Sheets)
 
-Primechop can write operational logs either to a local Excel workbook or to a Google Sheet.
+Primechop can write operational logs to a lightweight SQLite store (recommended), a local Excel workbook, or a Google Sheet.
 
 Environment variables:
 - `EXCEL_AUDIT_ENABLED=true`
-- `EXCEL_AUDIT_BACKEND=excel` or `EXCEL_AUDIT_BACKEND=google`
+- `EXCEL_AUDIT_BACKEND=sqlite` (recommended), `excel`, or `google`
+- `EXCEL_AUDIT_SQLITE_DB=primechop.db` (used when backend is `sqlite`)
 - `EXCEL_AUDIT_ASYNC_WRITES=true` (recommended for faster bot replies)
 - `EXCEL_AUDIT_FLUSH_INTERVAL_SECONDS=1.0` (lower = more frequent flushes, higher = fewer I/O calls)
 - `EXCEL_AUDIT_BATCH_SIZE=25` (higher = better throughput under load)
+
+SQLite mode:
+- Writes order audit events to `audit_orders` and waiter snapshots to `audit_waiters`.
+- Uses append/upsert SQL operations and avoids repeated Excel workbook load/save overhead.
 
 Excel mode:
 - `EXCEL_AUDIT_FILE=primechop_audit.xlsx`

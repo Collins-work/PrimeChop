@@ -4,6 +4,7 @@ import atexit
 import logging
 from pathlib import Path
 from queue import Empty, Queue
+import sqlite3
 from threading import RLock
 from threading import Event, Thread
 import time
@@ -54,7 +55,8 @@ class ExcelAuditTrail:
         self,
         file_path: str,
         enabled: bool = True,
-        backend: str = "excel",
+        backend: str = "sqlite",
+        sqlite_db_path: str = "primechop.db",
         google_spreadsheet_id: str = "",
         google_credentials_file: str = "",
         order_sheet_name: str = ORDER_SHEET,
@@ -65,7 +67,8 @@ class ExcelAuditTrail:
     ):
         self.enabled = enabled
         self.file_path = Path(file_path)
-        self.backend = (backend or "excel").strip().lower()
+        self.backend = (backend or "sqlite").strip().lower()
+        self.sqlite_db_path = Path(sqlite_db_path).expanduser()
         self.google_spreadsheet_id = (google_spreadsheet_id or "").strip()
         self.google_credentials_file = Path(google_credentials_file).expanduser() if google_credentials_file else None
         self.order_sheet_name = order_sheet_name or ORDER_SHEET
@@ -80,15 +83,19 @@ class ExcelAuditTrail:
         self._stop_event = Event()
         self._worker_thread: Thread | None = None
 
+        if self.backend not in {"sqlite", "excel", "google"}:
+            logger.warning("Unsupported audit backend '%s'. Falling back to sqlite.", self.backend)
+            self.backend = "sqlite"
+
         if self.backend == "google":
             if gspread is None:
-                logger.warning("Google Sheets backend requested but gspread is not installed. Falling back to Excel.")
-                self.backend = "excel"
+                logger.warning("Google Sheets backend requested but gspread is not installed. Falling back to sqlite.")
+                self.backend = "sqlite"
             elif not self.google_spreadsheet_id or not self.google_credentials_file:
                 logger.warning(
-                    "Google Sheets backend requested but credentials/spreadsheet id missing. Falling back to Excel."
+                    "Google Sheets backend requested but credentials/spreadsheet id missing. Falling back to sqlite."
                 )
-                self.backend = "excel"
+                self.backend = "sqlite"
 
         if not self.enabled:
             self.async_writes = False
@@ -205,10 +212,62 @@ class ExcelAuditTrail:
                 self._ensure_google_sheet(self.order_sheet_name, ORDER_HEADERS)
                 self._ensure_google_sheet(self.waiter_sheet_name, WAITER_HEADERS)
                 return
+            if self.backend == "sqlite":
+                self._ensure_sqlite_tables()
+                return
             workbook = self._load_or_create_workbook()
             self._ensure_sheet(workbook, self.order_sheet_name, ORDER_HEADERS)
             self._ensure_sheet(workbook, self.waiter_sheet_name, WAITER_HEADERS)
             self._save_workbook(workbook)
+
+    def _sqlite_connection(self) -> sqlite3.Connection:
+        self.sqlite_db_path.parent.mkdir(parents=True, exist_ok=True)
+        connection = sqlite3.connect(self.sqlite_db_path)
+        try:
+            return connection
+        except Exception:
+            connection.close()
+            raise
+
+    def _ensure_sqlite_tables(self) -> None:
+        with self._sqlite_connection() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS audit_orders (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    event TEXT NOT NULL,
+                    timestamp TEXT NOT NULL,
+                    order_ref TEXT NOT NULL,
+                    customer_id INTEGER NOT NULL,
+                    customer_name TEXT,
+                    item TEXT,
+                    amount INTEGER NOT NULL,
+                    hall TEXT,
+                    room TEXT,
+                    order_status TEXT,
+                    payment_status TEXT,
+                    payment_provider TEXT,
+                    payment_tx_ref TEXT,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                )
+                """
+            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_orders_order_ref ON audit_orders(order_ref)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_orders_timestamp ON audit_orders(timestamp)")
+
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS audit_waiters (
+                    user_id INTEGER PRIMARY KEY,
+                    full_name TEXT,
+                    waiter_code TEXT,
+                    role TEXT,
+                    verified INTEGER NOT NULL DEFAULT 0,
+                    online INTEGER NOT NULL DEFAULT 0,
+                    updated_at TEXT
+                )
+                """
+            )
 
     def _load_or_create_workbook(self):
         if self.file_path.exists():
@@ -309,10 +368,89 @@ class ExcelAuditTrail:
             with self._lock:
                 if self.backend == "google":
                     self._process_google_batch(operations)
+                elif self.backend == "sqlite":
+                    self._process_sqlite_batch(operations)
                 else:
                     self._process_excel_batch(operations)
         except Exception:
             logger.exception("Failed to flush audit batch")
+
+    def _process_sqlite_batch(self, operations: list[dict]) -> None:
+        order_rows: list[tuple] = []
+        waiter_upserts: list[tuple] = []
+        waiter_deletes: list[int] = []
+
+        for operation in operations:
+            op_type = operation.get("type")
+            if op_type == "order":
+                values = operation.get("values", [])
+                if len(values) != len(ORDER_HEADERS):
+                    continue
+                order_rows.append(tuple(values))
+            elif op_type == "waiter_upsert":
+                values = operation.get("values", [])
+                if len(values) != len(WAITER_HEADERS):
+                    continue
+                waiter_upserts.append(tuple(values))
+            elif op_type == "waiter_remove":
+                user_id = int(operation.get("user_id", 0) or 0)
+                if user_id > 0:
+                    waiter_deletes.append(user_id)
+
+        if not order_rows and not waiter_upserts and not waiter_deletes:
+            return
+
+        with self._sqlite_connection() as conn:
+            if order_rows:
+                conn.executemany(
+                    """
+                    INSERT INTO audit_orders (
+                        event,
+                        timestamp,
+                        order_ref,
+                        customer_id,
+                        customer_name,
+                        item,
+                        amount,
+                        hall,
+                        room,
+                        order_status,
+                        payment_status,
+                        payment_provider,
+                        payment_tx_ref
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    order_rows,
+                )
+
+            if waiter_upserts:
+                conn.executemany(
+                    """
+                    INSERT INTO audit_waiters (
+                        user_id,
+                        full_name,
+                        waiter_code,
+                        role,
+                        verified,
+                        online,
+                        updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(user_id) DO UPDATE SET
+                        full_name=excluded.full_name,
+                        waiter_code=excluded.waiter_code,
+                        role=excluded.role,
+                        verified=excluded.verified,
+                        online=excluded.online,
+                        updated_at=excluded.updated_at
+                    """,
+                    waiter_upserts,
+                )
+
+            if waiter_deletes:
+                conn.executemany(
+                    "DELETE FROM audit_waiters WHERE user_id=?",
+                    [(user_id,) for user_id in waiter_deletes],
+                )
 
     def _process_excel_batch(self, operations: list[dict]) -> None:
         workbook = self._load_or_create_workbook()
