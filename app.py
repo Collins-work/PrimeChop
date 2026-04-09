@@ -96,7 +96,6 @@ from ui import (
     order_claim_keyboard,
     order_post_actions_keyboard,
     payment_method_keyboard,
-    pay_now_keyboard,
     start_place_order_keyboard,
     vendor_items_keyboard,
     vendor_selection_keyboard,
@@ -634,6 +633,63 @@ def admin_clear_orders_confirm_keyboard() -> InlineKeyboardMarkup:
     )
 
 
+def mock_payment_actions_keyboard(
+    payment_url: str,
+    tx_ref: str,
+    payment_kind: str,
+    label: str = "💳 Pay Now",
+) -> InlineKeyboardMarkup:
+    rows = [[InlineKeyboardButton(label, url=payment_url)]]
+    if settings.korapay_mode == "mock":
+        confirm_label = "✅ Confirm Top-Up (Admin)" if payment_kind == "topup" else "✅ Confirm Payment (Admin)"
+        rows.append([InlineKeyboardButton(confirm_label, callback_data=f"payconfirm:{payment_kind}:{tx_ref}")])
+    return InlineKeyboardMarkup(rows)
+
+
+async def notify_admins_mock_payment_request(
+    context: ContextTypes.DEFAULT_TYPE,
+    payment_kind: str,
+    tx_ref: str,
+    amount: int,
+    user_id: int,
+    order_ref: str = "",
+):
+    if settings.korapay_mode != "mock" or not settings.admin_ids:
+        return
+
+    confirm_label = "✅ Confirm Top-Up (Admin)" if payment_kind == "topup" else "✅ Confirm Payment (Admin)"
+    keyboard = InlineKeyboardMarkup(
+        [[InlineKeyboardButton(confirm_label, callback_data=f"payconfirm:{payment_kind}:{tx_ref}")]]
+    )
+
+    if payment_kind == "topup":
+        text = (
+            "🧪 <b>Mock Top-Up Pending Confirmation</b>\n\n"
+            f"<b>User ID:</b> {user_id}\n"
+            f"<b>Amount:</b> ₦{amount:,}\n"
+            f"<b>Reference:</b> {tx_ref}"
+        )
+    else:
+        text = (
+            "🧪 <b>Mock Order Payment Pending Confirmation</b>\n\n"
+            f"<b>User ID:</b> {user_id}\n"
+            f"<b>Order Ref:</b> {order_ref or 'N/A'}\n"
+            f"<b>Amount:</b> ₦{amount:,}\n"
+            f"<b>Reference:</b> {tx_ref}"
+        )
+
+    for admin_id in settings.admin_ids:
+        try:
+            await context.bot.send_message(
+                chat_id=admin_id,
+                text=text,
+                parse_mode="HTML",
+                reply_markup=keyboard,
+            )
+        except Exception:
+            logger.exception("Failed to send mock payment confirmation request to admin %s", admin_id)
+
+
 def format_admin_home() -> str:
     return (
         "🔧 <b>Admin Control Center</b>\n\n"
@@ -992,25 +1048,40 @@ async def checkout_payment_callback(update: Update, context: ContextTypes.DEFAUL
         _audit_order_event(db.get_order(order_id), event="order_created", payment_status="pending")
         context.user_data.pop("pending_checkout", None)
 
-        await _edit_or_send_callback_message(
-            query,
-            format_order_payment_ready(
-                order_ref=requested_order_ref,
-                vendor_name=pending["vendor_name"],
-                item_name=pending["item_name"],
-                hall_name=pending["hall_name"],
-                room_number=pending["room_number"],
-                amount=amount,
-                payment_provider=payments.provider_name(),
-            ),
-            parse_mode="HTML",
-            reply_markup=pay_now_keyboard(payment_result.checkout_url, label="💳 Pay with Korapay"),
+        order_payment_text = format_order_payment_ready(
+            order_ref=requested_order_ref,
+            vendor_name=pending["vendor_name"],
+            item_name=pending["item_name"],
+            hall_name=pending["hall_name"],
+            room_number=pending["room_number"],
+            amount=amount,
+            payment_provider=payments.provider_name(),
+        )
+        order_payment_markup = mock_payment_actions_keyboard(
+            payment_url=payment_result.checkout_url,
+            tx_ref=payment_result.tx_ref,
+            payment_kind="order",
+            label="💳 Pay with Korapay",
         )
 
         if settings.korapay_mode == "mock":
-            await context.bot.send_message(
-                chat_id=user.id,
-                text=f"Mock mode is active. Admin can confirm this payment with /confirm_order {payment_result.tx_ref}.",
+            order_payment_text += "\n\nℹ️ <b>Mock mode:</b> admin can confirm from the button below."
+
+        await _edit_or_send_callback_message(
+            query,
+            order_payment_text,
+            parse_mode="HTML",
+            reply_markup=order_payment_markup,
+        )
+
+        if settings.korapay_mode == "mock":
+            await notify_admins_mock_payment_request(
+                context=context,
+                payment_kind="order",
+                tx_ref=payment_result.tx_ref,
+                amount=amount,
+                user_id=user.id,
+                order_ref=requested_order_ref,
             )
         return
 
@@ -1069,7 +1140,7 @@ async def _dispatch_paid_order(order_row, context: ContextTypes.DEFAULT_TYPE):
 
 async def confirm_order_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    if not is_admin(user.id):
+    if not is_admin(user.id) and not has_super_admin_access(user.id, context):
         await update.effective_message.reply_text(format_unauthorized(), parse_mode="HTML")
         return
 
@@ -1088,6 +1159,66 @@ async def confirm_order_payment(update: Update, context: ContextTypes.DEFAULT_TY
         f"✅ Order payment confirmed for {order['order_ref'] or order['id']}.",
     )
     await _dispatch_paid_order(order, context)
+
+
+async def mock_payment_confirm_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    user = query.from_user
+    if not is_admin(user.id) and not has_super_admin_access(user.id, context):
+        await query.answer("Only admin can confirm this payment.", show_alert=True)
+        return
+
+    if settings.korapay_mode != "mock":
+        await query.answer("Mock confirmation is disabled in live mode.", show_alert=True)
+        return
+
+    parts = query.data.split(":", 2)
+    if len(parts) != 3:
+        await query.answer("Invalid confirmation action.", show_alert=True)
+        return
+
+    payment_kind = parts[1]
+    tx_ref = parts[2].strip()
+    if not tx_ref:
+        await query.answer("Missing payment reference.", show_alert=True)
+        return
+
+    if payment_kind == "topup":
+        tx = db.mark_wallet_tx_success(tx_ref)
+        if not tx:
+            await query.answer("Pending top-up not found or already processed.", show_alert=True)
+            return
+
+        await _edit_or_send_callback_message(
+            query,
+            f"✅ Top-up confirmed for reference {tx_ref}.",
+            parse_mode="HTML",
+        )
+        await context.bot.send_message(
+            chat_id=tx["user_id"],
+            text=format_topup_success(tx["amount"]),
+            parse_mode="HTML",
+        )
+        return
+
+    if payment_kind == "order":
+        order = db.mark_order_payment_success(tx_ref)
+        if not order:
+            await query.answer("Pending order payment not found or already processed.", show_alert=True)
+            return
+
+        _audit_order_event(order, event="payment_confirmed", payment_status="confirmed")
+        await _edit_or_send_callback_message(
+            query,
+            f"✅ Order payment confirmed for {order['order_ref'] or order['id']}.",
+            parse_mode="HTML",
+        )
+        await _dispatch_paid_order(order, context)
+        return
+
+    await query.answer("Unsupported confirmation action.", show_alert=True)
 
 
 async def order_catalog_navigation_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1544,9 +1675,22 @@ async def initialize_topup_for_user(
         status="pending",
     )
 
-    keyboard = pay_now_keyboard(result.checkout_url)
     text = format_topup_created(amount, result.tx_ref, settings.korapay_mode)
-    await context.bot.send_message(chat_id=chat_id, text=text, reply_markup=keyboard, parse_mode="HTML")
+    reply_markup = mock_payment_actions_keyboard(
+        payment_url=result.checkout_url,
+        tx_ref=result.tx_ref,
+        payment_kind="topup",
+    )
+    await context.bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup, parse_mode="HTML")
+
+    if settings.korapay_mode == "mock":
+        await notify_admins_mock_payment_request(
+            context=context,
+            payment_kind="topup",
+            tx_ref=result.tx_ref,
+            amount=amount,
+            user_id=user.id,
+        )
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2713,7 +2857,7 @@ async def topup_amount_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def confirm_topup(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    if not is_admin(user.id):
+    if not is_admin(user.id) and not has_super_admin_access(user.id, context):
         text = format_unauthorized()
         await update.effective_message.reply_text(text, parse_mode="HTML")
         return
@@ -3447,6 +3591,7 @@ def main():
     app.add_handler(CallbackQueryHandler(claim_order_callback, pattern=r"^claim:\d+$"))
     app.add_handler(CallbackQueryHandler(waiter_complete_callback, pattern=r"^complete_claim:\d+$"))
     app.add_handler(CallbackQueryHandler(order_rating_callback, pattern=r"^rate:\d+:[1-5]$"))
+    app.add_handler(CallbackQueryHandler(mock_payment_confirm_callback, pattern=r"^payconfirm:(topup|order):[A-Za-z0-9_]+$"))
     app.add_handler(CallbackQueryHandler(topup_preset_callback, pattern=r"^topup:\d+$"))
     app.add_handler(CallbackQueryHandler(topup_action_callback, pattern=r"^topup:(start|custom)$"))
     app.add_handler(CallbackQueryHandler(checkout_payment_callback, pattern=r"^checkout:(wallet|korapay|cancel):[a-z0-9]{7}$"))

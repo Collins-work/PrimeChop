@@ -182,8 +182,12 @@ def order_post_actions_keyboard() -> InlineKeyboardMarkup:
 def format_start_message(cafeteria_name: str) -> str:
     """Format welcome/start message."""
     return (
-        "Welcome to PrimeChop!\n"
-        "Your cravings, our priority. Fresh meals, fast delivery — let’s get started!"
+        "🍽️ <b>WELCOME TO PRIMECHOP</b> 🍽️\n\n"
+        "<b>Your smart dining assistant</b>, built to make ordering and service effortless.\n\n"
+        "✨ Place orders quickly and track them in real time.\n"
+        "✨ Enjoy smooth coordination between customers and staff.\n"
+        "✨ Reliable, efficient, and designed to keep everything organized.\n\n"
+        "<i>PrimeChop — simplifying dining, one order at a time.</i> 🚀"
     )
 
 
@@ -546,7 +550,10 @@ def format_topup_created(amount: int, tx_ref: str, korapay_mode: str = "live") -
         f"<i>Click the button below to open the KoraPay card checkout and complete payment.</i>"
     )
     if korapay_mode == "mock":
-        text += f"\n\n{EMOJI_INFO} <i>Mock mode: admin can complete with</i> /confirm_topup {tx_ref}"
+        text += (
+            f"\n\n{EMOJI_INFO} <i>Mock mode: admin can confirm using the button below</i>"
+            f"\n<i>Command fallback:</i> /confirm_topup {tx_ref}"
+        )
     return text
 
 
