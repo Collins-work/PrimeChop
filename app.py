@@ -36,6 +36,7 @@ from ui import (
     BTN_MENU,
     BTN_ORDER_HISTORY,
     BTN_PLACE_ORDER,
+    BTN_EXIT_WAITER_MODE,
     BTN_VIEW_ORDERS,
     BTN_WALLET,
     BTN_TERMS,
@@ -516,7 +517,7 @@ def generate_waiter_code() -> str:
 
 def generate_waiter_user_id() -> str:
     for _ in range(200):
-        public_user_id = f"WAI{random.randint(100, 999)}"
+        public_user_id = f"UID{random.randint(100, 999)}"
         if not db.waiter_public_user_id_exists(public_user_id):
             return public_user_id
     raise RuntimeError("Unable to generate waiter user id.")
@@ -535,6 +536,7 @@ def admin_panel_keyboard() -> InlineKeyboardMarkup:
         [
             [InlineKeyboardButton("👨‍🍳 Waiter Management", callback_data="admin:menu_waiters")],
             [InlineKeyboardButton("📈 Order Analysis", callback_data="admin:menu_analytics")],
+            [InlineKeyboardButton("📦 Order Tracker", callback_data="admin:order_tracker")],
             [InlineKeyboardButton("📊 Waiter Analysis", callback_data="admin:waiter_analytics")],
             [InlineKeyboardButton("🍽️ Catalog Management", callback_data="admin:menu_catalog")],
             [InlineKeyboardButton("⚡ Quick Actions", callback_data="admin:menu_quick")],
@@ -589,8 +591,21 @@ def admin_quick_actions_keyboard() -> InlineKeyboardMarkup:
         [
             [InlineKeyboardButton("✅ Pending Approvals", callback_data="adminwm:approve_waiters")],
             [InlineKeyboardButton("✉️ Invite Waiter", callback_data="admin:invite_waiter")],
+            [InlineKeyboardButton("📦 Track Active Orders", callback_data="admin:order_tracker")],
+            [InlineKeyboardButton("🗑️ Clear Order History", callback_data="admin:clear_orders_prompt")],
             [InlineKeyboardButton("📊 Open Analytics", callback_data="admin:order_analytics")],
             [InlineKeyboardButton("🔙 Back to Admin Home", callback_data="admin:menu")],
+        ]
+    )
+
+
+def admin_clear_orders_confirm_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("🗑️ Yes, Clear All Orders", callback_data="admin:clear_orders_confirm"),
+                InlineKeyboardButton("❎ Cancel", callback_data="admin:menu_quick"),
+            ]
         ]
     )
 
@@ -609,6 +624,8 @@ def format_admin_quick_actions() -> str:
         "Use shortcuts for common admin tasks:\n"
         "• Pending waiter approvals\n"
         "• Invite waiter\n"
+        "• Track active/completed waiter orders\n"
+        "• Clear order history\n"
         "• Open analytics dashboard"
     )
 
@@ -1210,6 +1227,87 @@ def waiter_claim_list_keyboard(orders: list) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows)
 
 
+def waiter_complete_list_keyboard(orders: list) -> InlineKeyboardMarkup:
+    rows = []
+    for row in orders[:10]:
+        order_ref = row["order_ref"] or str(row["id"])
+        rows.append([InlineKeyboardButton(f"✅ Complete #{order_ref}", callback_data=f"complete_claim:{row['id']}")])
+    return InlineKeyboardMarkup(rows)
+
+
+def order_rating_keyboard(order_id: int) -> InlineKeyboardMarkup:
+    rows = [
+        [
+            InlineKeyboardButton("⭐ 1", callback_data=f"rate:{order_id}:1"),
+            InlineKeyboardButton("⭐ 2", callback_data=f"rate:{order_id}:2"),
+            InlineKeyboardButton("⭐ 3", callback_data=f"rate:{order_id}:3"),
+        ],
+        [
+            InlineKeyboardButton("⭐ 4", callback_data=f"rate:{order_id}:4"),
+            InlineKeyboardButton("⭐ 5", callback_data=f"rate:{order_id}:5"),
+        ],
+    ]
+    return InlineKeyboardMarkup(rows)
+
+
+def format_waiter_active_order_board(rows: list) -> str:
+    if not rows:
+        return "📋 <b>All Active Orders</b>\n\nNo active paid orders right now."
+
+    lines = ["📋 <b>All Active Orders</b>"]
+    for row in rows:
+        order_ref = row["order_ref"] or str(row["id"])
+        item_name = row["item_name"] or f"Item #{row['id']}"
+        hall_name = row["hall_name"] or "Unknown hall"
+        room_number = row["room_number"] or "N/A"
+        amount = int(row["amount"] or 0)
+        if row["status"] == "pending_waiter":
+            status_text = "Open"
+        else:
+            owner = row["waiter_name"] or "another waiter"
+            status_text = f"Claimed by {owner}"
+
+        lines.append(
+            f"#{order_ref} (ID: {row['id']}) - {item_name} - ₦{amount:,} - {hall_name} Room {room_number} - {status_text}"
+        )
+
+    return "\n".join(lines)
+
+
+def format_admin_order_tracker(rows: list) -> str:
+    if not rows:
+        return "📦 <b>Order Tracker</b>\n\nNo claimed or completed orders yet."
+
+    lines = ["📦 <b>Order Tracker</b>", "Accepted and completed orders with waiter ownership."]
+    for row in rows:
+        order_ref = row["order_ref"] or str(row["id"])
+        item_name = row["item_name"] or f"Item #{row['id']}"
+        hall_name = row["hall_name"] or "Unknown hall"
+        room_number = row["room_number"] or "N/A"
+        waiter_code = row["waiter_code"] or "N/A"
+        waiter_name = row["waiter_name"] or "Unassigned"
+        rating = row["customer_rating"]
+
+        if row["status"] == "claimed":
+            status = "In progress"
+            status_time = row["updated_at"] or "N/A"
+            time_label = "Accepted at"
+        else:
+            status = "Completed"
+            status_time = row["updated_at"] or "N/A"
+            time_label = "Completed at"
+
+        rating_label = f"{int(rating)}/5" if rating is not None else "Not rated"
+        lines.append(
+            f"#{order_ref} ({status}) - {item_name} - ₦{int(row['amount'] or 0):,}\n"
+            f"Waiter: {waiter_name} [{waiter_code}]\n"
+            f"Delivery: {hall_name} Room {room_number}\n"
+            f"{time_label}: {status_time}\n"
+            f"Customer Rating: {rating_label}"
+        )
+    return "\n\n".join(lines)
+
+
 def _resolve_logo_source() -> tuple[bool, str]:
     logo = (settings.start_logo or "").strip()
     if not logo:
@@ -1503,7 +1601,7 @@ async def waiter_register_details_step(update: Update, context: ContextTypes.DEF
         details=details,
     )
     request_id = waiter_request["id"]
-    waiter_user_id = waiter_request["public_user_id"] or f"WAI{request_id:03d}"
+    waiter_user_id = waiter_request["public_user_id"] or f"UID{request_id:03d}"
     context.user_data.pop("waiter_register_mode", None)
     await update.effective_message.reply_text(
         (
@@ -1539,8 +1637,18 @@ async def waiter_login_code_step(update: Update, context: ContextTypes.DEFAULT_T
 
     user = update.effective_user
     code = (update.effective_message.text or "").strip().upper()
+    if code in {"CANCEL", "EXIT", "BACK", "STOP"}:
+        context.user_data.pop("waiter_login_mode", None)
+        await update.effective_message.reply_text(
+            "Waiter login cancelled.",
+            reply_markup=home_keyboard(user_role(user.id)),
+        )
+        return
+
     if not re.fullmatch(r"WAI\d{3,6}", code):
-        await update.effective_message.reply_text("Invalid code format. Example: WAI123")
+        await update.effective_message.reply_text(
+            "Invalid code format. Example: WAI123\n\nSend CANCEL to exit waiter login.",
+        )
         return
 
     activated = db.activate_waiter_by_code(user.id, code)
@@ -1660,7 +1768,7 @@ async def admin_waiter_management_callback(update: Update, context: ContextTypes
             await context.bot.send_message(chat_id=user.id, text="✅ No pending waiter approvals.")
         else:
             for row in pending:
-                public_id = row["public_user_id"] or f"WAI{row['id']:03d}"
+                public_id = row["public_user_id"] or f"UID{row['id']:03d}"
                 text = (
                     "👨‍🍳 <b>Pending Waiter Approval</b>\n\n"
                     f"<b>User ID:</b> {public_id}\n"
@@ -1830,6 +1938,16 @@ async def admin_panel_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         )
         return
 
+    if data == "admin:order_tracker":
+        rows = db.list_admin_order_progress(limit=80)
+        await _edit_or_send_callback_message(
+            query,
+            text=format_admin_order_tracker(rows),
+            parse_mode="HTML",
+            reply_markup=admin_panel_keyboard(),
+        )
+        return
+
     if data == "admin:waiter_analytics":
         rows = db.waiter_performance(limit=30)
         await _edit_or_send_callback_message(
@@ -1958,6 +2076,33 @@ async def admin_panel_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         )
         return
 
+    if data == "admin:clear_orders_prompt":
+        total_orders = db.count_orders()
+        await _edit_or_send_callback_message(
+            query,
+            text=(
+                "🗑️ <b>Clear Order History</b>\n\n"
+                f"This will permanently delete <b>{total_orders}</b> orders from the database.\n"
+                "This action cannot be undone."
+            ),
+            parse_mode="HTML",
+            reply_markup=admin_clear_orders_confirm_keyboard(),
+        )
+        return
+
+    if data == "admin:clear_orders_confirm":
+        deleted_count = db.clear_order_history()
+        await _edit_or_send_callback_message(
+            query,
+            text=(
+                "✅ <b>Order History Cleared</b>\n\n"
+                f"Deleted <b>{deleted_count}</b> orders from history."
+            ),
+            parse_mode="HTML",
+            reply_markup=admin_quick_actions_keyboard(),
+        )
+        return
+
     if data == "admin:pending_waiters":
         pending = db.list_pending_waiter_requests(limit=20)
         if not pending:
@@ -1965,7 +2110,7 @@ async def admin_panel_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             return
 
         for row in pending:
-            public_id = row["public_user_id"] or f"WAI{row['id']:03d}"
+            public_id = row["public_user_id"] or f"UID{row['id']:03d}"
             text = (
                 "👨‍🍳 <b>Pending Waiter Approval</b>\n\n"
                 f"<b>User ID:</b> {public_id}\n"
@@ -2109,6 +2254,12 @@ async def view_orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.effective_message.reply_text(format_unauthorized(), parse_mode="HTML")
         return
 
+    active_orders = db.list_waiter_active_orders(limit=40)
+    await update.effective_message.reply_text(
+        format_waiter_active_order_board(active_orders),
+        parse_mode="HTML",
+    )
+
     available_orders = db.list_unclaimed_paid_orders(limit=20)
     await update.effective_message.reply_text(
         format_waiter_order_book(available_orders),
@@ -2118,11 +2269,15 @@ async def view_orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     claimed_orders = db.list_waiter_claimed_orders(user.id, limit=10)
     if claimed_orders:
-        lines = ["🧾 <b>Your Claimed Orders</b>", "Use /complete <order_id> after successful delivery."]
+        lines = ["🧾 <b>Your Claimed Orders</b>", "Mark delivery complete using /complete <order_id> or tap a Complete button."]
         for row in claimed_orders:
             order_ref = row["order_ref"] or str(row["id"])
             lines.append(f"#{order_ref} (ID: {row['id']}) - ₦{int(row['amount'] or 0):,}")
-        await update.effective_message.reply_text("\n".join(lines), parse_mode="HTML")
+        await update.effective_message.reply_text(
+            "\n".join(lines),
+            parse_mode="HTML",
+            reply_markup=waiter_complete_list_keyboard(claimed_orders),
+        )
 
 
 def _can_view_admin_analytics(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> bool:
@@ -2151,6 +2306,15 @@ async def waiter_analysis(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.effective_message.reply_text(format_waiter_analytics_dashboard(rows), parse_mode="HTML")
 
 
+async def order_progress(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if not _can_view_admin_analytics(user.id, context):
+        await update.effective_message.reply_text("Run /admin and login first.")
+        return
+    rows = db.list_admin_order_progress(limit=80)
+    await update.effective_message.reply_text(format_admin_order_tracker(rows), parse_mode="HTML")
+
+
 async def order_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     rows = db.list_customer_orders(user.id, limit=10)
@@ -2158,6 +2322,19 @@ async def order_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.effective_message.reply_text(format_empty_order_history(), parse_mode="HTML")
         return
     await update.effective_message.reply_text(format_order_history(rows), parse_mode="HTML")
+
+
+async def clear_orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if not has_super_admin_access(user.id, context):
+        await update.effective_message.reply_text("Run /admin first and log in.")
+        return
+
+    deleted_count = db.clear_order_history()
+    await update.effective_message.reply_text(
+        f"✅ Order history cleared. Deleted {deleted_count} orders.",
+        reply_markup=admin_quick_actions_keyboard(),
+    )
 
 
 async def terms(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2431,6 +2608,68 @@ async def claim_order_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     await query.edit_message_text(f"Order #{order_id} claimed successfully by you.")
 
 
+async def waiter_complete_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    waiter = query.from_user
+    if not is_waiter(waiter.id):
+        await query.answer("Only registered waiters can complete orders.", show_alert=True)
+        return
+
+    order_id = int(query.data.split(":")[1])
+    ok = db.complete_order(order_id, waiter.id)
+    if not ok:
+        await query.answer("Unable to complete this order.", show_alert=True)
+        return
+
+    order = db.get_order(order_id)
+    if not order:
+        await query.answer("Order not found.", show_alert=True)
+        return
+
+    _audit_order_event(order, event="order_completed", payment_status="confirmed")
+
+    waiter_text = format_order_completed_waiter(order_id, order["waiter_share"], order["platform_share"])
+    await query.edit_message_text(waiter_text, parse_mode="HTML")
+    await context.bot.send_message(
+        chat_id=order["customer_id"],
+        text=(
+            f"{format_order_completed(order_id, settings.cafeteria_name)}\n\n"
+            "Please rate this delivery service:"
+        ),
+        parse_mode="HTML",
+        reply_markup=order_rating_keyboard(order_id),
+    )
+
+
+async def order_rating_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    user = query.from_user
+    parts = query.data.split(":")
+    if len(parts) != 3:
+        await query.answer("Invalid rating action.", show_alert=True)
+        return
+
+    order_id = int(parts[1])
+    rating = int(parts[2])
+    if rating < 1 or rating > 5:
+        await query.answer("Rating must be between 1 and 5.", show_alert=True)
+        return
+
+    ok = db.submit_order_rating(order_id, user.id, rating)
+    if not ok:
+        await query.answer("Rating unavailable for this order.", show_alert=True)
+        return
+
+    stars = "⭐" * rating
+    await query.edit_message_text(
+        f"✅ Thanks for your feedback!\n\nYour rating for order #{order_id}: {stars} ({rating}/5)",
+    )
+
+
 async def topup_preset_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -2512,6 +2751,9 @@ async def home_button_router(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if text == BTN_VIEW_ORDERS or normalized in {"view orders", "order book", "/view_orders"}:
         await view_orders(update, context)
         return
+    if text == BTN_EXIT_WAITER_MODE or normalized in {"exit waiter mode", "switch to customer", "/waiter_logout"}:
+        await waiter_logout_mode(update, context)
+        return
     if text == BTN_ADMIN_ADDITEM:
         await additem_start(update, context)
         return
@@ -2542,6 +2784,22 @@ async def waiter_offline(update: Update, context: ContextTypes.DEFAULT_TYPE):
     _audit_waiter_upsert_by_user_id(user.id)
     text = format_waiter_offline_success()
     await update.effective_message.reply_text(text, parse_mode="HTML")
+
+
+async def waiter_logout_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    row = db.get_user(user.id)
+    if not row or int(row["waiter_verified"] or 0) != 1:
+        await update.effective_message.reply_text("You do not have waiter access yet.")
+        return
+
+    db.set_waiter_online(user.id, False)
+    db.set_role(user.id, "customer")
+    _audit_waiter_upsert_by_user_id(user.id)
+    await update.effective_message.reply_text(
+        "🚪 Waiter mode exited. You are now using the customer menu.",
+        reply_markup=home_keyboard("customer"),
+    )
 
 
 async def complete(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2577,8 +2835,12 @@ async def complete(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.effective_message.reply_text(text, parse_mode="HTML")
     await context.bot.send_message(
         chat_id=order["customer_id"],
-        text=format_order_completed(order_id, settings.cafeteria_name),
+        text=(
+            f"{format_order_completed(order_id, settings.cafeteria_name)}\n\n"
+            "Please rate this delivery service:"
+        ),
         parse_mode="HTML",
+        reply_markup=order_rating_keyboard(order_id),
     )
 
 
@@ -2765,9 +3027,12 @@ def main():
                 BotCommand("menu", "Open food menu"),
                 BotCommand("confirm_order", "Confirm an order payment by tx ref"),
                 BotCommand("view_orders", "Waiter order book (available and claimed)"),
+                BotCommand("waiter_logout", "Exit waiter mode to customer menu"),
                 BotCommand("waiters", "View the waiter database"),
+                BotCommand("order_progress", "Admin tracker for accepted/completed orders"),
                 BotCommand("order_analysis", "Admin order analytics"),
                 BotCommand("waiter_analysis", "Admin waiter analytics"),
+                BotCommand("clear_orders", "Admin: clear order history"),
             ]
         )
 
@@ -2828,11 +3093,14 @@ def main():
     app.add_handler(CommandHandler("confirm_order", confirm_order_payment))
     app.add_handler(CommandHandler("view_orders", view_orders))
     app.add_handler(CommandHandler("waiters", waiters_db))
+    app.add_handler(CommandHandler("order_progress", order_progress))
     app.add_handler(CommandHandler("order_analysis", order_analysis))
     app.add_handler(CommandHandler("waiter_analysis", waiter_analysis))
+    app.add_handler(CommandHandler("clear_orders", clear_orders))
     app.add_handler(CommandHandler("menu", menu))
     app.add_handler(CommandHandler("waiter_online", waiter_online))
     app.add_handler(CommandHandler("waiter_offline", waiter_offline))
+    app.add_handler(CommandHandler("waiter_logout", waiter_logout_mode))
     app.add_handler(CommandHandler("complete", complete))
     app.add_handler(add_item_handler)
     app.add_handler(order_flow_handler)
@@ -2842,6 +3110,8 @@ def main():
     app.add_handler(CallbackQueryHandler(order_catalog_navigation_callback, pattern=r"^catalog:(back_vendors|back_items)$"))
     app.add_handler(CallbackQueryHandler(waiter_portal_callback, pattern=r"^waiter_portal:(login|register)$"))
     app.add_handler(CallbackQueryHandler(claim_order_callback, pattern=r"^claim:\d+$"))
+    app.add_handler(CallbackQueryHandler(waiter_complete_callback, pattern=r"^complete_claim:\d+$"))
+    app.add_handler(CallbackQueryHandler(order_rating_callback, pattern=r"^rate:\d+:[1-5]$"))
     app.add_handler(CallbackQueryHandler(topup_preset_callback, pattern=r"^topup:\d+$"))
     app.add_handler(CallbackQueryHandler(topup_action_callback, pattern=r"^topup:(start|custom)$"))
     app.add_handler(CallbackQueryHandler(checkout_payment_callback, pattern=r"^checkout:(wallet|korapay|cancel):[a-z0-9]{7}$"))

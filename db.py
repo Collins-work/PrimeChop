@@ -92,6 +92,12 @@ class Database:
             conn.execute("ALTER TABLE orders ADD COLUMN payment_tx_ref TEXT")
         if "payment_link" not in columns:
             conn.execute("ALTER TABLE orders ADD COLUMN payment_link TEXT")
+        if "customer_rating" not in columns:
+            conn.execute("ALTER TABLE orders ADD COLUMN customer_rating INTEGER")
+        if "customer_feedback" not in columns:
+            conn.execute("ALTER TABLE orders ADD COLUMN customer_feedback TEXT")
+        if "rating_submitted_at" not in columns:
+            conn.execute("ALTER TABLE orders ADD COLUMN rating_submitted_at TEXT")
         conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_order_ref ON orders(order_ref)")
         conn.execute("UPDATE orders SET payment_method='transfer' WHERE payment_method IS NULL OR payment_method=''")
         conn.execute("UPDATE orders SET payment_provider='korapay' WHERE payment_provider IS NULL OR payment_provider=''")
@@ -188,6 +194,9 @@ class Database:
                     payment_provider TEXT DEFAULT 'korapay',
                     payment_tx_ref TEXT,
                     payment_link TEXT,
+                    customer_rating INTEGER,
+                    customer_feedback TEXT,
+                    rating_submitted_at TEXT,
                     waiter_id INTEGER,
                     service_fee_total INTEGER NOT NULL,
                     waiter_share INTEGER NOT NULL,
@@ -890,6 +899,32 @@ class Database:
                 (waiter_id, limit),
             ).fetchall()
 
+    def list_waiter_active_orders(self, limit: int = 40) -> list[sqlite3.Row]:
+        with self.connection() as conn:
+            return conn.execute(
+                """
+                SELECT
+                    o.id,
+                    o.order_ref,
+                    o.amount,
+                    o.cafeteria_name,
+                    o.hall_name,
+                    o.room_number,
+                    o.status,
+                    o.waiter_id,
+                    m.name AS item_name,
+                    u.full_name AS waiter_name,
+                    o.created_at
+                FROM orders o
+                LEFT JOIN menu_items m ON m.id = o.item_id
+                LEFT JOIN users u ON u.user_id = o.waiter_id
+                WHERE o.status IN ('pending_waiter', 'claimed')
+                ORDER BY o.id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+
     def order_analytics(self, limit: int = 5) -> dict:
         with self.connection() as conn:
             rows = conn.execute(
@@ -966,6 +1001,18 @@ class Database:
             ],
         }
 
+    def count_orders(self) -> int:
+        with self.connection() as conn:
+            row = conn.execute("SELECT COUNT(*) AS total FROM orders").fetchone()
+            return int(row["total"] or 0)
+
+    def clear_order_history(self) -> int:
+        with self.connection() as conn:
+            row = conn.execute("SELECT COUNT(*) AS total FROM orders").fetchone()
+            deleted_count = int(row["total"] or 0)
+            conn.execute("DELETE FROM orders")
+            return deleted_count
+
     def mark_order_payment_success(self, tx_ref: str) -> Optional[sqlite3.Row]:
         now = self.now_iso()
         with self.connection() as conn:
@@ -1011,6 +1058,51 @@ class Database:
                 (now, order_id, waiter_id),
             )
             return cursor.rowcount == 1
+
+    def submit_order_rating(self, order_id: int, customer_id: int, rating: int) -> bool:
+        now = self.now_iso()
+        with self.connection() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE orders
+                SET customer_rating=?, rating_submitted_at=?, updated_at=?
+                WHERE id=?
+                  AND customer_id=?
+                  AND status='completed'
+                  AND customer_rating IS NULL
+                """,
+                (rating, now, now, order_id, customer_id),
+            )
+            return cursor.rowcount == 1
+
+    def list_admin_order_progress(self, limit: int = 80) -> list[sqlite3.Row]:
+        with self.connection() as conn:
+            return conn.execute(
+                """
+                SELECT
+                    o.id,
+                    o.order_ref,
+                    o.status,
+                    o.amount,
+                    o.hall_name,
+                    o.room_number,
+                    o.customer_rating,
+                    o.created_at,
+                    o.updated_at,
+                    m.name AS item_name,
+                    c.full_name AS customer_name,
+                    w.full_name AS waiter_name,
+                    w.waiter_code AS waiter_code
+                FROM orders o
+                LEFT JOIN menu_items m ON m.id = o.item_id
+                LEFT JOIN users c ON c.user_id = o.customer_id
+                LEFT JOIN users w ON w.user_id = o.waiter_id
+                WHERE o.status IN ('claimed', 'completed')
+                ORDER BY o.id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
 
     def create_wallet_tx(
         self,

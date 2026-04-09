@@ -46,21 +46,28 @@ BTN_HELP = f"{EMOJI_HELP} Help"
 BTN_WAITER_ONLINE = f"{EMOJI_ONLINE} Go Online"
 BTN_WAITER_OFFLINE = f"{EMOJI_OFFLINE} Go Offline"
 BTN_VIEW_ORDERS = "📦 View Orders"
+BTN_EXIT_WAITER_MODE = "🚪 Exit Waiter Mode"
 BTN_ADMIN_ADDITEM = f"{EMOJI_ADD} Add Item"
 
 
 # ==================== KEYBOARD BUILDERS ====================
 def home_keyboard(role: str) -> ReplyKeyboardMarkup:
     """Build home keyboard based on user role."""
+    if role == "waiter":
+        rows = [
+            [KeyboardButton(BTN_VIEW_ORDERS)],
+            [KeyboardButton(BTN_WAITER_ONLINE), KeyboardButton(BTN_WAITER_OFFLINE)],
+            [KeyboardButton(BTN_ORDER_HISTORY), KeyboardButton(BTN_CUSTOMER_SUPPORT)],
+            [KeyboardButton(BTN_EXIT_WAITER_MODE)],
+        ]
+        return ReplyKeyboardMarkup(rows, resize_keyboard=True, one_time_keyboard=False)
+
     rows = [
         [KeyboardButton(BTN_PLACE_ORDER), KeyboardButton(BTN_VIEW_CART)],
         [KeyboardButton(BTN_BECOME_WAITER), KeyboardButton(BTN_CUSTOMER_SUPPORT)],
         [KeyboardButton(BTN_ORDER_HISTORY), KeyboardButton(BTN_TERMS)],
         [KeyboardButton(BTN_WALLET), KeyboardButton(BTN_MENU)],
     ]
-    if role == "waiter":
-        rows.append([KeyboardButton(BTN_WAITER_ONLINE), KeyboardButton(BTN_WAITER_OFFLINE)])
-        rows.append([KeyboardButton(BTN_VIEW_ORDERS)])
     if role == "admin":
         rows.append([KeyboardButton(BTN_ADMIN_ADDITEM)])
     return ReplyKeyboardMarkup(rows, resize_keyboard=True, one_time_keyboard=False)
