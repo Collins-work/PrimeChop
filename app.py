@@ -3012,6 +3012,17 @@ def main():
     asyncio.set_event_loop(asyncio.new_event_loop())
 
     async def post_init(application: Application):
+        await application.bot.set_my_description(
+            (
+                "🍽️ PrimeChop – Your Smart Dining Companion\n"
+                "Order meals and manage requests with ease.\n"
+                "Fast updates, smooth coordination, and fewer mistakes.\n"
+                "Simple. Efficient. Reliable. ✨"
+            )
+        )
+        await application.bot.set_my_short_description(
+            "PrimeChop - Smart dining, smooth delivery, reliable service."
+        )
         await application.bot.set_my_commands(
             [
                 BotCommand("start", "Show welcome message"),
