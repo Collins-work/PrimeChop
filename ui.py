@@ -205,16 +205,22 @@ def start_place_order_keyboard() -> InlineKeyboardMarkup:
 def start_recommendation_keyboard(recommendations) -> InlineKeyboardMarkup:
     """Build quick actions for start-screen recommendations."""
     rows = []
-    for recommendation in (recommendations or [])[:2]:
+    picks = (recommendations or [])[:3]
+    for recommendation in picks:
         item_id = int(recommendation["id"])
         item_name = str(recommendation["name"])
-        short_name = (item_name[:14] + "...") if len(item_name) > 17 else item_name
+        short_name = (item_name[:24] + "...") if len(item_name) > 27 else item_name
         rows.append(
             [
-                InlineKeyboardButton(f"🛍️ Add {short_name}", callback_data=f"rec:add:{item_id}"),
-                InlineKeyboardButton(f"⚡ Urgent {short_name}", callback_data=f"rec:urgent:{item_id}"),
+                InlineKeyboardButton(f"➕ Add {short_name}", callback_data=f"rec:add:{item_id}"),
             ]
         )
+
+    if picks:
+        urgent_pick = picks[0]
+        urgent_name = str(urgent_pick["name"])
+        urgent_short = (urgent_name[:18] + "...") if len(urgent_name) > 21 else urgent_name
+        rows.append([InlineKeyboardButton(f"⚡ Quick checkout: {urgent_short}", callback_data=f"rec:urgent:{int(urgent_pick['id'])}")])
 
     rows.append([InlineKeyboardButton("🛒 View Cart", callback_data="cart:view")])
     rows.append([InlineKeyboardButton(BTN_PLACE_ORDER, callback_data="start:place_order")])
@@ -245,9 +251,8 @@ def cart_actions_keyboard() -> InlineKeyboardMarkup:
 def format_start_banner_caption(cafeteria_name: str, period_label: str) -> str:
     """Format the short caption shown with the welcome image."""
     return (
-        "🍽️ <b>PRIMECHOP DAILY PICKS</b>\n\n"
-        f"<b>{cafeteria_name}</b> • {period_label}\n"
-        "Your recommendations are shown below."
+        "🍽️ <b>PrimeChop Picks</b>\n"
+        f"<b>{cafeteria_name}</b> • {period_label}"
     )
 
 
@@ -260,30 +265,24 @@ def format_start_message(
     """Format the personalized welcome and meal recommendation message."""
     first_name = user_name.split()[0] if user_name else "there"
     lines = [
-        "🍽️ <b>WELCOME TO PRIMECHOP</b>",
+        f"👋 <b>Welcome, {first_name}</b>",
+        f"Here are your {period_label.lower()} picks from <b>{cafeteria_name}</b>.",
         "",
-        f"Hi {first_name}, here are today's {period_label.lower()} recommendations from <b>{cafeteria_name}</b>.",
-        "",
-        "<b>Today's suggestions</b>",
+        "<b>Recommended for you</b>",
     ]
 
     if recommendations:
         for index, recommendation in enumerate(recommendations[:3], start=1):
-            lines.append(
-                f"{index}. <b>{recommendation['name']}</b> - {recommendation['vendor_name']} - ₦{recommendation['price']:,}"
-            )
-            lines.append(f"   {recommendation['reason']}")
+            lines.append(f"{index}. <b>{recommendation['name']}</b>")
+            lines.append(f"   {recommendation['vendor_name']} • ₦{recommendation['price']:,}")
+            lines.append(f"   Why: {recommendation['reason']}")
     else:
-        lines.append("Your taste profile is still building. Tap Place an Order to get better recommendations.")
+        lines.append("No personal picks yet. Place an order to train your recommendations.")
 
     lines.extend(
         [
             "",
-            "<b>How this works</b>",
-            "• We combine time of day, your order history, and what students are ordering.",
-            "• Recommendations refresh daily.",
-            "",
-            "<i>PrimeChop - smart meals, smooth delivery.</i>",
+            "Tap a quick action below to add a meal or start checkout.",
         ]
     )
     return "\n".join(lines)

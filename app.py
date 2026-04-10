@@ -1,5 +1,7 @@
 import asyncio
+import ast
 import logging
+import operator
 import random
 import re
 import string
@@ -306,6 +308,64 @@ def _prime_match_service_response(text: str) -> str:
         if re.search(pattern, normalized):
             return response
     return f"I’m here for PrimeChop questions, friendly chat, and mini-games. Tell me what you need, or tap {BTN_PRIME_GAME}."
+
+
+def _prime_arithmetic_reply(text: str) -> str | None:
+    normalized = _prime_normalize(text)
+    candidate = normalized
+
+    if candidate.startswith("what is "):
+        candidate = candidate[8:].strip()
+    elif candidate.startswith("calculate "):
+        candidate = candidate[10:].strip()
+    elif candidate.startswith("solve "):
+        candidate = candidate[6:].strip()
+
+    candidate = candidate.rstrip("?.!").strip()
+    if not candidate:
+        return None
+
+    if not re.fullmatch(r"[0-9\s\(\)\+\-\*/%.]+", candidate):
+        return None
+
+    try:
+        parsed = ast.parse(candidate, mode="eval")
+    except Exception:
+        return None
+
+    ops = {
+        ast.Add: operator.add,
+        ast.Sub: operator.sub,
+        ast.Mult: operator.mul,
+        ast.Div: operator.truediv,
+        ast.Mod: operator.mod,
+        ast.USub: operator.neg,
+        ast.UAdd: operator.pos,
+    }
+
+    def _eval(node):
+        if isinstance(node, ast.Expression):
+            return _eval(node.body)
+        if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
+            return node.value
+        if isinstance(node, ast.UnaryOp) and type(node.op) in ops:
+            return ops[type(node.op)](_eval(node.operand))
+        if isinstance(node, ast.BinOp) and type(node.op) in ops:
+            left = _eval(node.left)
+            right = _eval(node.right)
+            return ops[type(node.op)](left, right)
+        raise ValueError("Unsupported expression")
+
+    try:
+        result = _eval(parsed)
+    except ZeroDivisionError:
+        return "I can’t divide by zero."
+    except Exception:
+        return None
+
+    if isinstance(result, float) and result.is_integer():
+        result = int(result)
+    return f"{result}"
 
 
 def _parse_waiter_registration_details(details: str) -> tuple[dict | None, str | None]:
@@ -727,6 +787,14 @@ async def prime_chat_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.effective_message.reply_text(
             "🌷 Hi hi. I’m Prime, and I’m very happy you’re here. Ask me anything about PrimeChop, or send me a game request if you want a tiny break.",
             parse_mode="HTML",
+            reply_markup=prime_keyboard(),
+        )
+        return
+
+    arithmetic_reply = _prime_arithmetic_reply(text)
+    if arithmetic_reply is not None:
+        await update.effective_message.reply_text(
+            arithmetic_reply,
             reply_markup=prime_keyboard(),
         )
         return
@@ -2313,7 +2381,7 @@ def _matches_time_of_day(item_name: str, meal_slot: str, period_label: str) -> b
     return any(keyword in name for keyword in keyword_groups.get(period_label, ()))
 
 
-def _build_start_recommendations(user_id: int) -> tuple[str, list[dict]]:
+def _build_start_recommendations(user_id: int, rotation_index: int = 0) -> tuple[str, list[dict]]:
     now = datetime.now(db.tz)
     period_label = _meal_period_label(now)
     day_label = now.strftime("%A")
@@ -2325,8 +2393,6 @@ def _build_start_recommendations(user_id: int) -> tuple[str, list[dict]]:
     trending_rows = db.list_trending_menu_items(limit=8)
     top_pick_map = {int(row["item_id"]): row for row in top_pick_rows}
     trending_map = {int(row["item_id"]): row for row in trending_rows}
-    day_rng = random.Random(f"{now.date().isoformat()}:{user_id}")
-
     scored_items = []
     for item in active_items:
         item_id = int(item["id"])
@@ -2354,7 +2420,6 @@ def _build_start_recommendations(user_id: int) -> tuple[str, list[dict]]:
             score += 10
             reasons.append(f"fits {period_label.lower()} ({meal_slot})")
 
-        score += day_rng.randint(0, 3)
         if not reasons:
             reasons.append(f"fresh pick for {day_label}")
 
@@ -2369,10 +2434,21 @@ def _build_start_recommendations(user_id: int) -> tuple[str, list[dict]]:
             }
         )
 
-    recommendations = sorted(
+    ranked_items = sorted(
         scored_items,
         key=lambda recommendation: (-recommendation["score"], recommendation["name"].lower(), recommendation["id"]),
-    )[:3]
+    )
+
+    recommendation_window = ranked_items[: min(8, len(ranked_items))]
+    if len(recommendation_window) <= 3:
+        recommendations = recommendation_window
+    else:
+        start_index = rotation_index % len(recommendation_window)
+        recommendations = [
+            recommendation_window[(start_index + offset) % len(recommendation_window)]
+            for offset in range(3)
+        ]
+
     return period_label, recommendations
 
 
@@ -2404,9 +2480,10 @@ def _build_public_recommendation_description() -> str:
     )
 
 
-async def send_start_banner(update: Update, role: str):
+async def send_start_banner(update: Update, role: str, context: ContextTypes.DEFAULT_TYPE):
     message = update.effective_message
-    period_label, recommendations = _build_start_recommendations(update.effective_user.id)
+    rotation_index = int(context.user_data.get("start_reco_counter", 0))
+    period_label, recommendations = _build_start_recommendations(update.effective_user.id, rotation_index)
     welcome_text = format_start_message(
         settings.cafeteria_name,
         period_label,
@@ -2600,7 +2677,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     role = user_role(user.id)
     db.upsert_user(user.id, user.full_name, role=role)
     _prime_clear_state(context)
-    await send_start_banner(update, role)
+    context.user_data["start_reco_counter"] = int(context.user_data.get("start_reco_counter", 0)) + 1
+    await send_start_banner(update, role, context)
 
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
