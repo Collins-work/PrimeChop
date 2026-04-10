@@ -152,8 +152,8 @@ Google setup notes:
 
 Tracked sheets and data:
 - `OrdersAudit`
-  - Appends a new row for each event: `order_created`, `payment_confirmed`, `order_completed`.
-  - Captures: timestamp, order ref, customer id/name, item, amount, hall/room, order status, payment status, payment provider, and payment tx reference.
+  - Appends a new row for each event: `order_created`, `payment_confirmed`, `order_claimed`, `order_completed`.
+  - Captures: timestamp, order ref, customer id/name, waiter id/name, item, amount, hall/room, order status, payment status, payment provider, and payment tx reference.
 - `WaiterRegistry`
   - Upserts waiter records when invited, approved, logged in, or switched online/offline.
   - Removes waiter records when deactivated/deleted.

@@ -545,6 +545,8 @@ def _audit_order_event(order_row, event: str, payment_status: str):
         return
     try:
         customer = db.get_user(order_row["customer_id"])
+        waiter_id = int(order_row["waiter_id"] or 0)
+        waiter = db.get_user(waiter_id) if waiter_id else None
         item = db.get_menu_item(order_row["item_id"])
         audit_trail.log_order(
             event=event,
@@ -552,6 +554,8 @@ def _audit_order_event(order_row, event: str, payment_status: str):
             order_ref=order_row["order_ref"] or str(order_row["id"]),
             customer_id=int(order_row["customer_id"]),
             customer_name=(customer["full_name"] if customer else "Unknown customer"),
+            waiter_id=waiter_id,
+            waiter_name=(waiter["full_name"] if waiter else ""),
             item=(item["name"] if item else f"Item #{order_row['item_id']}"),
             amount=int(order_row["amount"] or 0),
             hall=order_row["hall_name"] or "",
@@ -3954,6 +3958,7 @@ async def claim_order_callback(update: Update, context: ContextTypes.DEFAULT_TYP
 
     order = db.get_order(order_id)
     if order:
+        _audit_order_event(order, event="order_claimed", payment_status="confirmed")
         await context.bot.send_message(
             chat_id=order["customer_id"],
             text=format_order_claimed(order_id, waiter.full_name),

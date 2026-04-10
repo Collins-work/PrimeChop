@@ -29,6 +29,8 @@ ORDER_HEADERS = [
     "order_ref",
     "customer_id",
     "customer_name",
+    "waiter_id",
+    "waiter_name",
     "item",
     "amount",
     "hall",
@@ -115,6 +117,8 @@ class ExcelAuditTrail:
         order_ref: str,
         customer_id: int,
         customer_name: str,
+        waiter_id: int,
+        waiter_name: str,
         item: str,
         amount: int,
         hall: str,
@@ -132,6 +136,8 @@ class ExcelAuditTrail:
             order_ref,
             int(customer_id),
             customer_name,
+            int(waiter_id),
+            waiter_name,
             item,
             int(amount),
             hall,
@@ -240,6 +246,8 @@ class ExcelAuditTrail:
                     order_ref TEXT NOT NULL,
                     customer_id INTEGER NOT NULL,
                     customer_name TEXT,
+                    waiter_id INTEGER,
+                    waiter_name TEXT,
                     item TEXT,
                     amount INTEGER NOT NULL,
                     hall TEXT,
@@ -252,6 +260,13 @@ class ExcelAuditTrail:
                 )
                 """
             )
+            existing_columns = {
+                row[1] for row in conn.execute("PRAGMA table_info(audit_orders)").fetchall()
+            }
+            if "waiter_id" not in existing_columns:
+                conn.execute("ALTER TABLE audit_orders ADD COLUMN waiter_id INTEGER")
+            if "waiter_name" not in existing_columns:
+                conn.execute("ALTER TABLE audit_orders ADD COLUMN waiter_name TEXT")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_orders_order_ref ON audit_orders(order_ref)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_orders_timestamp ON audit_orders(timestamp)")
 
@@ -410,6 +425,8 @@ class ExcelAuditTrail:
                         order_ref,
                         customer_id,
                         customer_name,
+                        waiter_id,
+                        waiter_name,
                         item,
                         amount,
                         hall,
@@ -418,7 +435,7 @@ class ExcelAuditTrail:
                         payment_status,
                         payment_provider,
                         payment_tx_ref
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     order_rows,
                 )
