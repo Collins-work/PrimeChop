@@ -38,6 +38,7 @@ KoraPay:
 Telegram delivery mode:
 - `WEBHOOK_ENABLED=false` uses polling (good for worker deployment)
 - `WEBHOOK_ENABLED=true` uses webhooks (requires public HTTPS URL)
+- Webhook mode also needs the PTB webhook dependency, which is installed from `requirements.txt`
 
 Service fee:
 - `SERVICE_FEE_TOTAL=500`
@@ -73,6 +74,7 @@ Render notes:
 
 Customer:
 - `/start`
+- `/prime` (opens Prime, the friendly assistant for PrimeChop questions and light games)
 - `/place_order`
 - `/view_cart`
 - `/customer_support`
@@ -81,6 +83,7 @@ Customer:
 - `/menu`
 - `/wallet`
 - `/topup <amount>`
+- `/cancel` (leave Prime chat mode and return to the main menu)
 
 Waiter:
 - `/become_waiter` (opens waiter portal: register or login with code)
@@ -160,6 +163,7 @@ Tracked sheets and data:
 
 - Waiter assignment policy is **show to all online waiters; first claim wins**.
 - New waiters register via `/become_waiter`; after admin approval they receive a code like `WAI123` and must login from the waiter portal.
+- Prime is a user-facing assistant persona for PrimeChop guidance, cute chat, and mini games; it should not reveal internal bot creation or operating details.
 - Food images support:
   - admin photo upload (stored as Telegram `file_id`)
   - image URL

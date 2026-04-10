@@ -8,10 +8,10 @@ import threading
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Optional
 
 from aiohttp import web
-from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import Bot, BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.error import NetworkError, TelegramError
 from telegram.request import HTTPXRequest
 from telegram.warnings import PTBUserWarning
@@ -33,6 +33,10 @@ from ui import (
     BTN_ADMIN_ADDITEM,
     BTN_BECOME_WAITER,
     BTN_CUSTOMER_SUPPORT,
+    BTN_PRIME,
+    BTN_PRIME_EXIT,
+    BTN_PRIME_GAME,
+    BTN_PRIME_HELP,
     BTN_MENU,
     BTN_ORDER_HISTORY,
     BTN_PLACE_ORDER,
@@ -48,6 +52,7 @@ from ui import (
     format_admin_additem_start,
     format_admin_additem_success,
     format_become_waiter_success,
+    format_start_banner_caption,
         format_catalog_items_list,
         format_catalog_management_menu,
         format_item_management_options,
@@ -63,6 +68,8 @@ from ui import (
     format_menu_vendor_caption,
     format_menu_item_caption,
     format_hall_prompt,
+    format_prime_exit,
+    format_prime_intro,
     format_order_payment_pending,
     format_order_payment_ready,
     format_order_claimed,
@@ -88,8 +95,11 @@ from ui import (
     format_waiter_online_success,
     format_waiter_order_alert,
     format_view_cart,
+    format_cart_view,
     format_wallet_info,
     format_checkout_payment_choice,
+    cart_actions_keyboard,
+    cart_hall_selection_keyboard,
     home_keyboard,
     hall_selection_keyboard,
     menu_item_keyboard,
@@ -97,6 +107,8 @@ from ui import (
     order_post_actions_keyboard,
     payment_method_keyboard,
     start_place_order_keyboard,
+    start_recommendation_keyboard,
+    prime_keyboard,
     vendor_items_keyboard,
     vendor_selection_keyboard,
     topup_presets_keyboard,
@@ -138,6 +150,206 @@ warnings.filterwarnings(
 @dataclass
 class RuntimeState:
     add_item_draft: Dict[int, dict] = field(default_factory=dict)
+
+
+PRIME_DISCLOSURE_PATTERNS = (
+    r"\b(who made you|who created you|built you|how were you built|how do you work|source code|internal code|bot creation|operation system|system prompt|credentials|token|secret)\b",
+    r"\b(what model|what ai|what engine|backend|database schema|deployment|hosting|server)\b",
+)
+
+PRIME_GAME_TRIGGERS = {
+    "game",
+    "games",
+    "play",
+    "riddle",
+    "quiz",
+    "joke",
+    "coin",
+    "flip",
+    "fun",
+}
+
+PRIME_SERVICE_RESPONSES = (
+    (r"\b(order|place an order|menu|vendor|food)\b", "PrimeChop helps you browse vendors, pick a dish, choose a delivery hall, enter your room, and then pay with wallet or card checkout."),
+    (r"\b(wallet|top ?up|balance|payment)\b", "Your wallet can store funds for faster checkout. Use the Wallet button or /topup <amount> to add money, then pay directly from your balance when you order."),
+    (r"\b(waiter|claim|delivery|dispatch)\b", "Once payment is confirmed, the order is sent to online waiters and the first one to claim it gets the delivery job."),
+    (r"\b(support|help|contact)\b", "Customer support is available if you need help with payments, delivery, or anything order-related."),
+    (r"\b(terms|rules|policy)\b", "PrimeChop keeps ordering simple: menu availability matters, wallet top-ups must confirm successfully, and completed deliveries are not reversed automatically."),
+)
+
+PRIME_RIDDLES = [
+    {
+        "prompt": "I speak without a mouth and hear without ears. What am I?",
+        "answers": {"echo"},
+        "hint": "You often hear me in caves or empty rooms.",
+    },
+    {
+        "prompt": "What gets wetter the more it dries?",
+        "answers": {"towel", "a towel"},
+        "hint": "It belongs in the bathroom.",
+    },
+]
+
+
+def _prime_normalize(text: str) -> str:
+    return re.sub(r"\s+", " ", (text or "").strip().lower())
+
+
+def _prime_is_disclosure_request(text: str) -> bool:
+    normalized = _prime_normalize(text)
+    return any(re.search(pattern, normalized) for pattern in PRIME_DISCLOSURE_PATTERNS)
+
+
+def _prime_clear_state(context: ContextTypes.DEFAULT_TYPE):
+    context.user_data.pop("prime_mode", None)
+    context.user_data.pop("prime_game", None)
+
+
+def _prime_match_service_response(text: str) -> str:
+    normalized = _prime_normalize(text)
+    for pattern, response in PRIME_SERVICE_RESPONSES:
+        if re.search(pattern, normalized):
+            return response
+    return f"I’m here for PrimeChop questions, friendly chat, and mini-games. Tell me what you need, or tap {BTN_PRIME_GAME}."
+
+
+def _prime_start_riddle(context: ContextTypes.DEFAULT_TYPE) -> str:
+    riddle = random.choice(PRIME_RIDDLES)
+    context.user_data["prime_game"] = {
+        "kind": "riddle",
+        "prompt": riddle["prompt"],
+        "answers": set(riddle["answers"]),
+        "hint": riddle["hint"],
+        "attempts": 0,
+    }
+    return (
+        "🧩 <b>Prime’s Riddle Time</b>\n\n"
+        f"{riddle['prompt']}\n\n"
+        "Type your answer, or send <b>hint</b> / <b>skip</b>."
+    )
+
+
+def _prime_start_coin_flip() -> str:
+    result = random.choice(["Heads", "Tails"])
+    emoji = "🪙"
+    return f"{emoji} <b>Coin Flip</b>\n\nIt landed on <b>{result}</b>. Want another game?"
+
+
+def _prime_game_reply(text: str, context: ContextTypes.DEFAULT_TYPE) -> str | None:
+    game_state = context.user_data.get("prime_game")
+    normalized = _prime_normalize(text)
+
+    if game_state and game_state.get("kind") == "riddle":
+        if normalized in {"hint", "give me a hint"}:
+            return f"💡 <b>Hint</b>\n\n{game_state['hint']}"
+        if normalized in {"skip", "pass", "answer", "show answer"}:
+            answer = next(iter(game_state["answers"]))
+            context.user_data.pop("prime_game", None)
+            return f"🌷 The answer was <b>{answer}</b>. Want to play again? Tap <b>{BTN_PRIME_GAME}</b>."
+
+        if normalized in game_state["answers"]:
+            context.user_data.pop("prime_game", None)
+            return f"🎉 <b>Correct!</b> You solved Prime’s riddle. Tap <b>{BTN_PRIME_GAME}</b> for another round."
+
+        game_state["attempts"] = int(game_state.get("attempts", 0)) + 1
+        if game_state["attempts"] >= 3:
+            answer = next(iter(game_state["answers"]))
+            context.user_data.pop("prime_game", None)
+            return f"💞 Nice try. The answer was <b>{answer}</b>. Tap <b>{BTN_PRIME_GAME}</b> for a new challenge."
+        return "Not quite, sweet pea. Try again, or send <b>hint</b>."
+
+    if normalized in {"riddle", "quiz"}:
+        return _prime_start_riddle(context)
+    if normalized in {"coin", "coin flip", "flip", "flip a coin"}:
+        return _prime_start_coin_flip()
+    if normalized in {"game", "play", "play game", "games", BTN_PRIME_GAME.lower()}:
+        game_choice = random.choice(["riddle", "coin"])
+        if game_choice == "riddle":
+            return _prime_start_riddle(context)
+        return _prime_start_coin_flip()
+    return None
+
+
+async def _prime_exit(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    _prime_clear_state(context)
+    role = user_role(update.effective_user.id)
+    await update.effective_message.reply_text(
+        format_prime_exit(),
+        parse_mode="HTML",
+        reply_markup=home_keyboard(role),
+    )
+
+
+async def prime_assistant(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    role = user_role(user.id)
+    db.upsert_user(user.id, user.full_name, role=role)
+    context.user_data["prime_mode"] = True
+    context.user_data.pop("prime_game", None)
+    await update.effective_message.reply_text(
+        format_prime_intro(settings.cafeteria_name),
+        parse_mode="HTML",
+        reply_markup=prime_keyboard(),
+    )
+
+
+async def prime_chat_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = (update.effective_message.text or "").strip()
+    normalized = _prime_normalize(text)
+
+    if normalized in {"/cancel", "cancel", "exit", "exit prime", "leave prime", "main menu", "menu", BTN_PRIME_EXIT.lower()}:
+        await _prime_exit(update, context)
+        return
+
+    if text == BTN_PRIME_GAME or normalized in {"play a game", "game", "play game", "games", "riddle", "quiz", "coin", "flip"}:
+        reply = _prime_game_reply(text, context)
+        if reply is None:
+            reply = _prime_start_coin_flip()
+        await update.effective_message.reply_text(reply, parse_mode="HTML", reply_markup=prime_keyboard())
+        return
+
+    if text == BTN_PRIME_HELP or normalized in {"primechop help", "help", "services", "what can you do", "how do i use primechop"}:
+        await update.effective_message.reply_text(
+            f"{_prime_match_service_response('help')}\n\nYou can also ask me for a game, a quick menu explanation, or where to find support.",
+            parse_mode="HTML",
+            reply_markup=prime_keyboard(),
+        )
+        return
+
+    if _prime_is_disclosure_request(text):
+        await update.effective_message.reply_text(
+            "🌸 I can’t share internal bot creation or operating details, but I can help with PrimeChop questions, ordering, wallet use, support, and cute little games.",
+            parse_mode="HTML",
+            reply_markup=prime_keyboard(),
+        )
+        return
+
+    game_reply = _prime_game_reply(text, context)
+    if game_reply is not None:
+        await update.effective_message.reply_text(game_reply, parse_mode="HTML", reply_markup=prime_keyboard())
+        return
+
+    if any(re.search(pattern, normalized) for pattern, _ in PRIME_SERVICE_RESPONSES):
+        await update.effective_message.reply_text(
+            _prime_match_service_response(text),
+            parse_mode="HTML",
+            reply_markup=prime_keyboard(),
+        )
+        return
+
+    if normalized in {"hi", "hello", "hey", "hii", "good morning", "good afternoon", "good evening"}:
+        await update.effective_message.reply_text(
+            "🌷 Hi hi. I’m Prime, and I’m very happy you’re here. Ask me anything about PrimeChop, or send me a game request if you want a tiny break.",
+            parse_mode="HTML",
+            reply_markup=prime_keyboard(),
+        )
+        return
+
+    await update.effective_message.reply_text(
+        _prime_match_service_response(text),
+        parse_mode="HTML",
+        reply_markup=prime_keyboard(),
+    )
 
 
 db = Database(path="primechop.db", timezone_name=settings.bot_timezone)
@@ -269,15 +481,38 @@ async def korapay_wallet_callback(request: web.Request) -> web.Response:
         return web.Response(text="Payment callback received", status=202)
 
     tx = db.mark_wallet_tx_success(reference)
-    if not tx:
-        return web.Response(text="Top-up already processed or not found", status=200)
+    if tx:
+        try:
+            callback_bot = Bot(token=settings.telegram_bot_token)
+            await callback_bot.send_message(
+                chat_id=tx["user_id"],
+                text=format_topup_success(tx["amount"]),
+                parse_mode="HTML",
+            )
+        except Exception:
+            logger.exception("Failed to send top-up success message for %s", reference)
+        return web.Response(text=f"Wallet top-up credited for reference {reference}", status=200)
 
-    return web.Response(text=f"Wallet top-up credited for reference {reference}", status=200)
+    order = db.mark_order_payment_success(reference)
+    if order:
+        _audit_order_event(order, event="payment_confirmed", payment_status="confirmed")
+        try:
+            callback_bot = Bot(token=settings.telegram_bot_token)
+            await _dispatch_paid_order_via_bot(order, callback_bot)
+        except Exception:
+            logger.exception("Failed to dispatch paid order from callback for %s", reference)
+        return web.Response(text=f"Order payment confirmed for reference {reference}", status=200)
+
+    return web.Response(text="Payment already processed or not found", status=200)
 
 
 def start_korapay_callback_server():
     if settings.webhook_enabled:
-        logger.info("Skipping dedicated KoraPay callback server in webhook mode to avoid port conflicts.")
+        logger.warning(
+            "Skipping dedicated KoraPay callback server because WEBHOOK_ENABLED=true. "
+            "KoraPay callback URL will not be served by this process in webhook mode unless you expose "
+            "/korapay/callback separately."
+        )
         return
     if not settings.korapay_callback_url:
         return
@@ -639,11 +874,7 @@ def mock_payment_actions_keyboard(
     payment_kind: str,
     label: str = "💳 Pay Now",
 ) -> InlineKeyboardMarkup:
-    rows = [[InlineKeyboardButton(label, url=payment_url)]]
-    if settings.korapay_mode == "mock":
-        confirm_label = "✅ Confirm Top-Up (Admin)" if payment_kind == "topup" else "✅ Confirm Payment (Admin)"
-        rows.append([InlineKeyboardButton(confirm_label, callback_data=f"payconfirm:{payment_kind}:{tx_ref}")])
-    return InlineKeyboardMarkup(rows)
+    return InlineKeyboardMarkup([[InlineKeyboardButton(label, url=payment_url)]])
 
 
 async def notify_admins_mock_payment_request(
@@ -807,6 +1038,134 @@ def _ensure_order_draft(context: ContextTypes.DEFAULT_TYPE) -> dict:
         context.user_data["order_draft"] = draft
     return draft
 
+def _get_cart(context: ContextTypes.DEFAULT_TYPE) -> dict[int, int]:
+    cart = context.user_data.get("cart")
+    if not isinstance(cart, dict):
+        cart = {}
+        context.user_data["cart"] = cart
+    normalized: dict[int, int] = {}
+    for key, qty in cart.items():
+        try:
+            item_id = int(key)
+            quantity = int(qty)
+        except (TypeError, ValueError):
+            continue
+        if quantity > 0:
+            normalized[item_id] = quantity
+    context.user_data["cart"] = normalized
+    return normalized
+
+
+def _get_item_selection(context: ContextTypes.DEFAULT_TYPE) -> dict:
+    selection = context.user_data.get("item_selection")
+    if not isinstance(selection, dict):
+        selection = {}
+        context.user_data["item_selection"] = selection
+    return selection
+
+
+def _build_item_selection_text(item_name: str, price: int, quantity: int, vendor_name: str) -> str:
+    subtotal = price * quantity
+    return (
+        f"🍽️ <b>{item_name}</b>\n"
+        f"🏪 <b>Vendor:</b> {vendor_name}\n"
+        f"💰 <b>Price:</b> ₦{price:,}\n"
+        f"🔢 <b>Quantity:</b> {quantity}\n"
+        f"🧾 <b>Subtotal:</b> ₦{subtotal:,}\n\n"
+        "Use the buttons below to update quantity or add this item to cart."
+    )
+
+
+def _catalog_item_actions_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("Quantity -1", callback_data="catalog:qty_dec"),
+                InlineKeyboardButton("Quantity +1", callback_data="catalog:qty_inc"),
+            ],
+            [InlineKeyboardButton("Add to Mission Cart", callback_data="catalog:add_current")],
+            [InlineKeyboardButton("Open Mission Cart", callback_data="cart:view")],
+            [InlineKeyboardButton("Back to Items", callback_data="catalog:back_items")],
+        ]
+    )
+
+
+def _current_item_selection_keyboard() -> InlineKeyboardMarkup:
+    return _catalog_item_actions_keyboard()
+
+
+def _cart_lines_and_total(context: ContextTypes.DEFAULT_TYPE) -> tuple[list[str], int, list[dict]]:
+    cart = _get_cart(context)
+    lines: list[str] = []
+    rows: list[dict] = []
+    total = 0
+    for item_id, qty in cart.items():
+        item = db.get_menu_item(item_id)
+        if not item:
+            continue
+        unit_price = int(item["price"] or 0)
+        subtotal = unit_price * qty
+        total += subtotal
+        rows.append({"item": item, "qty": qty, "subtotal": subtotal, "unit_price": unit_price})
+        lines.append(f"• {item['name']} x{qty} - ₦{subtotal:,} (₦{unit_price:,} each)")
+    return lines, total, rows
+
+
+def _cart_keyboard(context: ContextTypes.DEFAULT_TYPE) -> InlineKeyboardMarkup:
+    _, _, rows = _cart_lines_and_total(context)
+    buttons = []
+    for row in rows[:12]:
+        item = row["item"]
+        short_name = (item["name"][:12] + "...") if len(item["name"]) > 15 else item["name"]
+        buttons.append(
+            [
+                InlineKeyboardButton(f"Qty -1 {short_name}", callback_data=f"cart:dec:{int(item['id'])}"),
+                InlineKeyboardButton(f"Qty +1 {short_name}", callback_data=f"cart:inc:{int(item['id'])}"),
+            ]
+        )
+
+    buttons.append([InlineKeyboardButton("Checkout", callback_data="cart:checkout")])
+    buttons.append([InlineKeyboardButton("Continue Shopping", callback_data="cart:vendors")])
+    buttons.append([InlineKeyboardButton("Clear Cart", callback_data="cart:clear")])
+    return InlineKeyboardMarkup(buttons)
+
+
+def _build_cart_checkout_draft(context: ContextTypes.DEFAULT_TYPE) -> Optional[dict]:
+    lines, total, rows = _cart_lines_and_total(context)
+    if not rows:
+        return None
+
+    vendor_names = {
+        (db.get_vendor(int(row["item"]["vendor_id"]))["name"] if row["item"]["vendor_id"] and db.get_vendor(int(row["item"]["vendor_id"])) else settings.cafeteria_name)
+        for row in rows
+    }
+    vendor_name = next(iter(vendor_names)) if len(vendor_names) == 1 else "Multiple Vendors"
+    details = "\n".join(lines)
+    summary = f"Cart Order ({len(rows)} item{'s' if len(rows) != 1 else ''})"
+    return {
+        "from_cart": True,
+        "vendor_name": vendor_name,
+        "item_name": summary,
+        "item_id": 0,
+        "amount": total,
+        "order_details": details,
+    }
+
+
+def _clear_order_flow_state(context: ContextTypes.DEFAULT_TYPE):
+    context.user_data.pop("order_draft", None)
+    context.user_data.pop("item_selection", None)
+    context.user_data.pop("cart_room_mode", None)
+
+
+def _render_vendor_menu_text() -> str:
+    return "🏪 <b>Choose a Vendor</b>\n\nSelect where you want to order from."
+
+
+def _cart_vendor_name(item) -> str:
+    vendor = db.get_vendor(item["vendor_id"]) if item and item["vendor_id"] else None
+    return vendor["name"] if vendor else settings.cafeteria_name
+
 
 def _checkout_customer_email(user) -> str:
     # KoraPay rejects local-only email domains like .local in live mode.
@@ -853,15 +1212,16 @@ async def _send_vendor_items(update: Update, context: ContextTypes.DEFAULT_TYPE,
     return ORDER_ITEM
 
 
-async def _send_hall_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def _send_hall_selection(update: Update, context: ContextTypes.DEFAULT_TYPE, *, from_cart: bool = False):
     draft = _ensure_order_draft(context)
     item_name = draft.get("item_name", "Selected item")
     vendor_name = draft.get("vendor_name", settings.cafeteria_name)
+    reply_markup = cart_hall_selection_keyboard(settings.delivery_halls) if from_cart else hall_selection_keyboard(settings.delivery_halls)
     await context.bot.send_message(
         chat_id=update.effective_user.id,
         text=format_hall_prompt(item_name, vendor_name),
         parse_mode="HTML",
-        reply_markup=hall_selection_keyboard(settings.delivery_halls),
+        reply_markup=reply_markup,
     )
     return ORDER_HALL
 
@@ -869,7 +1229,7 @@ async def _send_hall_selection(update: Update, context: ContextTypes.DEFAULT_TYP
 async def _finalize_order_checkout(update: Update, context: ContextTypes.DEFAULT_TYPE):
     draft = context.user_data.get("order_draft", {})
     if not draft:
-        await update.effective_message.reply_text("Order session expired. Tap Place an Order and try again.")
+        await update.effective_message.reply_text("Order session expired. Tap Launch Food Mission and try again.")
         return ConversationHandler.END
 
     user = update.effective_user
@@ -878,7 +1238,7 @@ async def _finalize_order_checkout(update: Update, context: ContextTypes.DEFAULT
     item_name = draft["item_name"]
     hall_name = draft["hall_name"]
     room_number = draft["room_number"]
-    amount = int(draft["amount"])
+    amount = int(draft["amount"]) + settings.service_fee_total
     user_row = db.get_user(user.id)
     wallet_balance = int(user_row["wallet_balance"] or 0) if user_row else 0
 
@@ -891,6 +1251,7 @@ async def _finalize_order_checkout(update: Update, context: ContextTypes.DEFAULT
         "amount": amount,
         "item_id": int(draft["item_id"]),
         "order_details": draft.get("order_details", ""),
+        "from_cart": bool(draft.get("from_cart", False)),
     }
 
     await update.effective_message.reply_text(
@@ -993,6 +1354,8 @@ async def checkout_payment_callback(update: Update, context: ContextTypes.DEFAUL
         order = db.get_order(order_id)
         _audit_order_event(order, event="order_created", payment_status="confirmed")
         context.user_data.pop("pending_checkout", None)
+        if pending.get("from_cart"):
+            context.user_data.pop("cart", None)
         await _edit_or_send_callback_message(
             query,
             "✅ <b>Wallet Payment Successful</b>\n\nYour wallet has been debited and your order is now being dispatched to available waiters.",
@@ -1047,6 +1410,8 @@ async def checkout_payment_callback(update: Update, context: ContextTypes.DEFAUL
         )
         _audit_order_event(db.get_order(order_id), event="order_created", payment_status="pending")
         context.user_data.pop("pending_checkout", None)
+        if pending.get("from_cart"):
+            context.user_data.pop("cart", None)
 
         order_payment_text = format_order_payment_ready(
             order_ref=requested_order_ref,
@@ -1065,7 +1430,7 @@ async def checkout_payment_callback(update: Update, context: ContextTypes.DEFAUL
         )
 
         if settings.korapay_mode == "mock":
-            order_payment_text += "\n\nℹ️ <b>Mock mode:</b> admin can confirm from the button below."
+            order_payment_text += "\n\nℹ️ <b>Mock mode:</b> admin has been notified to confirm this payment."
 
         await _edit_or_send_callback_message(
             query,
@@ -1089,13 +1454,13 @@ async def checkout_payment_callback(update: Update, context: ContextTypes.DEFAUL
     return
 
 
-async def _dispatch_paid_order(order_row, context: ContextTypes.DEFAULT_TYPE):
+async def _dispatch_paid_order_via_bot(order_row, bot: Bot):
     order = db.get_order(order_row["id"])
     if not order:
         return
 
-    item = db.get_menu_item(order["item_id"])
-    item_name = item["name"] if item else f"Item #{order['item_id']}"
+    item = db.get_menu_item(order["item_id"]) if int(order["item_id"] or 0) > 0 else None
+    item_name = item["name"] if item else (order["order_details"] or f"Item #{order['item_id']}")
     vendor_name = order["cafeteria_name"]
     hall_name = order["hall_name"] or "Unknown hall"
     room_number = order["room_number"] or "N/A"
@@ -1108,7 +1473,7 @@ async def _dispatch_paid_order(order_row, context: ContextTypes.DEFAULT_TYPE):
         room_number=room_number,
         item_name=item_name,
     )
-    await context.bot.send_message(
+    await bot.send_message(
         chat_id=order["customer_id"],
         text=confirmation_text,
         parse_mode="HTML",
@@ -1126,16 +1491,21 @@ async def _dispatch_paid_order(order_row, context: ContextTypes.DEFAULT_TYPE):
         vendor_name=vendor_name,
         hall_name=hall_name,
         room_number=room_number,
+        order_details=order["order_details"] or "",
     )
     keyboard = order_claim_keyboard(order["id"])
 
     for waiter in online_waiters:
-        await context.bot.send_message(
+        await bot.send_message(
             chat_id=waiter["user_id"],
             text=waiter_text,
             reply_markup=keyboard,
             parse_mode="HTML",
         )
+
+
+async def _dispatch_paid_order(order_row, context: ContextTypes.DEFAULT_TYPE):
+    await _dispatch_paid_order_via_bot(order_row, context.bot)
 
 
 async def confirm_order_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1505,10 +1875,111 @@ def _resolve_logo_source() -> tuple[bool, str]:
     return False, ""
 
 
+def _meal_period_label(now: datetime) -> str:
+    hour = now.hour
+    if 5 <= hour < 11:
+        return "Breakfast"
+    if 11 <= hour < 16:
+        return "Lunch"
+    if 16 <= hour < 22:
+        return "Dinner"
+    return "Late-night bites"
+
+
+def _matches_time_of_day(item_name: str, meal_slot: str, period_label: str) -> bool:
+    normalized_slot = (meal_slot or "").strip().lower()
+    slot_map = {
+        "Breakfast": {"breakfast", "any"},
+        "Lunch": {"lunch", "any"},
+        "Dinner": {"dinner", "any"},
+        "Late-night bites": {"late-night", "any"},
+    }
+    if normalized_slot in slot_map.get(period_label, set()):
+        return True
+
+    name = (item_name or "").lower()
+    keyword_groups = {
+        "Breakfast": ("egg", "bread", "tea", "coffee", "porridge", "oats", "yam", "akara", "moi moi", "sandwich"),
+        "Lunch": ("rice", "jollof", "fried rice", "pasta", "spaghetti", "beans", "soup", "plantain", "chicken", "beef", "fish"),
+        "Dinner": ("noodles", "shawarma", "burger", "pizza", "salad", "snack", "chicken", "soup", "rice"),
+        "Late-night bites": ("noodles", "snack", "burger", "shawarma", "pizza", "tea", "sandwich"),
+    }
+    return any(keyword in name for keyword in keyword_groups.get(period_label, ()))
+
+
+def _build_start_recommendations(user_id: int) -> tuple[str, list[dict]]:
+    now = datetime.now(db.tz)
+    period_label = _meal_period_label(now)
+    day_label = now.strftime("%A")
+    active_items = db.list_menu_items_with_vendor()
+    if not active_items:
+        return period_label, []
+
+    top_pick_rows = db.list_customer_top_picks(user_id, limit=8)
+    trending_rows = db.list_trending_menu_items(limit=8)
+    top_pick_map = {int(row["item_id"]): row for row in top_pick_rows}
+    trending_map = {int(row["item_id"]): row for row in trending_rows}
+    day_rng = random.Random(f"{now.date().isoformat()}:{user_id}")
+
+    scored_items = []
+    for item in active_items:
+        item_id = int(item["id"])
+        item_name = item["name"] or f"Item #{item_id}"
+        vendor_name = item["vendor_name"] or "Unknown vendor"
+        price = int(item["price"] or 0)
+        meal_slot = (item["meal_slot"] or "any") if "meal_slot" in item.keys() else "any"
+
+        score = 0
+        reasons = []
+
+        top_pick = top_pick_map.get(item_id)
+        if top_pick:
+            order_count = int(top_pick["order_count"] or 0)
+            score += 20 + (order_count * 3)
+            reasons.append(f"one of your top picks ({order_count} order{'s' if order_count != 1 else ''})")
+
+        trending = trending_map.get(item_id)
+        if trending:
+            trend_count = int(trending["order_count"] or 0)
+            score += 12 + trend_count
+            reasons.append(f"popular with students ({trend_count} recent order{'s' if trend_count != 1 else ''})")
+
+        if _matches_time_of_day(item_name, meal_slot, period_label):
+            score += 10
+            reasons.append(f"fits {period_label.lower()} ({meal_slot})")
+
+        score += day_rng.randint(0, 3)
+        if not reasons:
+            reasons.append(f"fresh pick for {day_label}")
+
+        scored_items.append(
+            {
+                "id": item_id,
+                "name": item_name,
+                "vendor_name": vendor_name,
+                "price": price,
+                "score": score,
+                "reason": "; ".join(reasons),
+            }
+        )
+
+    recommendations = sorted(
+        scored_items,
+        key=lambda recommendation: (-recommendation["score"], recommendation["name"].lower(), recommendation["id"]),
+    )[:3]
+    return period_label, recommendations
+
+
 async def send_start_banner(update: Update, role: str):
     message = update.effective_message
-    welcome_text = format_start_message(settings.cafeteria_name)
-    cta_keyboard = start_place_order_keyboard()
+    period_label, recommendations = _build_start_recommendations(update.effective_user.id)
+    welcome_text = format_start_message(
+        settings.cafeteria_name,
+        period_label,
+        recommendations,
+        update.effective_user.full_name,
+    )
+    recommendation_keyboard = start_recommendation_keyboard(recommendations)
     has_logo, logo_source = _resolve_logo_source()
     sent_banner = False
 
@@ -1517,9 +1988,8 @@ async def send_start_banner(update: Update, role: str):
             if logo_source.startswith("http://") or logo_source.startswith("https://"):
                 await message.reply_photo(
                     photo=logo_source,
-                    caption=welcome_text,
+                    caption=format_start_banner_caption(settings.cafeteria_name, period_label),
                     parse_mode="HTML",
-                    reply_markup=cta_keyboard,
                 )
                 sent_banner = True
 
@@ -1527,16 +1997,14 @@ async def send_start_banner(update: Update, role: str):
                 with open(logo_source, "rb") as logo_file:
                     await message.reply_photo(
                         photo=logo_file,
-                        caption=welcome_text,
+                        caption=format_start_banner_caption(settings.cafeteria_name, period_label),
                         parse_mode="HTML",
-                        reply_markup=cta_keyboard,
                     )
                     sent_banner = True
         except Exception:
             logger.exception("Unable to send logo on /start; falling back to text")
 
-    if not sent_banner:
-        await message.reply_text(welcome_text, parse_mode="HTML", reply_markup=cta_keyboard)
+    await message.reply_text(welcome_text, parse_mode="HTML", reply_markup=recommendation_keyboard)
 
     await message.reply_text("Choose an option below.", reply_markup=home_keyboard(role))
 
@@ -1697,6 +2165,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     role = user_role(user.id)
     db.upsert_user(user.id, user.full_name, role=role)
+    _prime_clear_state(context)
     await send_start_banner(update, role)
 
 
@@ -1711,12 +2180,190 @@ async def place_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def view_cart(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    rows = db.list_customer_orders(user.id, limit=10)
-    if not rows:
-        await update.effective_message.reply_text(format_empty_cart(), parse_mode="HTML")
+    lines, total, _ = _cart_lines_and_total(context)
+    if not lines:
+        await update.effective_message.reply_text(format_empty_cart(), parse_mode="HTML", reply_markup=cart_actions_keyboard())
         return
-    await update.effective_message.reply_text(format_view_cart(rows), parse_mode="HTML")
+
+    await update.effective_message.reply_text(
+        format_cart_view(lines, total),
+        parse_mode="HTML",
+        reply_markup=_cart_keyboard(context),
+    )
+
+
+async def cart_action_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    action = query.data.split(":", 1)[1]
+    if action == "vendors":
+        await _edit_or_send_callback_message(
+            query,
+            _render_vendor_menu_text(),
+            parse_mode="HTML",
+            reply_markup=vendor_selection_keyboard(_get_order_vendor_rows()),
+        )
+        return
+
+    if action == "clear":
+        context.user_data.pop("cart", None)
+        await _edit_or_send_callback_message(
+            query,
+            format_empty_cart(),
+            parse_mode="HTML",
+            reply_markup=cart_actions_keyboard(),
+        )
+        return
+
+    if action == "checkout":
+        cart_draft = _build_cart_checkout_draft(context)
+        if not cart_draft:
+            await query.answer("Your cart is empty.", show_alert=True)
+            return
+        context.user_data["order_draft"] = cart_draft
+        await _send_hall_selection(update, context, from_cart=True)
+        return
+
+    if action == "view":
+        lines, total, _ = _cart_lines_and_total(context)
+        if not lines:
+            await _edit_or_send_callback_message(
+                query,
+                format_empty_cart(),
+                parse_mode="HTML",
+                reply_markup=cart_actions_keyboard(),
+            )
+            return
+        await _edit_or_send_callback_message(
+            query,
+            format_cart_view(lines, total),
+            parse_mode="HTML",
+            reply_markup=_cart_keyboard(context),
+        )
+
+
+async def cart_hall_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    draft = _ensure_order_draft(context)
+    try:
+        hall_index = int(query.data.split(":")[2])
+    except (ValueError, IndexError):
+        await query.answer("Invalid hall selection.", show_alert=True)
+        return
+
+    if hall_index < 0 or hall_index >= len(settings.delivery_halls):
+        await query.answer("Invalid hall selection.", show_alert=True)
+        return
+
+    hall_name = settings.delivery_halls[hall_index]
+    draft["hall_name"] = hall_name
+    context.user_data["order_draft"] = draft
+    context.user_data["cart_room_mode"] = True
+
+    await _edit_or_send_callback_message(
+        query,
+        format_room_prompt_with_hall(hall_name),
+        parse_mode="HTML",
+    )
+
+
+async def start_recommendation_action_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    parts = query.data.split(":")
+    if len(parts) != 3:
+        await query.answer("Invalid recommendation action.", show_alert=True)
+        return
+
+    action = parts[1]
+    try:
+        item_id = int(parts[2])
+    except ValueError:
+        await query.answer("Invalid menu item.", show_alert=True)
+        return
+
+    item = db.get_menu_item(item_id)
+    if not item or int(item["active"] or 0) != 1:
+        await query.answer("This recommended item is unavailable now.", show_alert=True)
+        return
+
+    cart = _get_cart(context)
+    cart[item_id] = int(cart.get(item_id, 0)) + 1
+    context.user_data["cart"] = cart
+
+    if action == "urgent":
+        cart_draft = _build_cart_checkout_draft(context)
+        if not cart_draft:
+            await query.answer("Unable to start urgent checkout right now.", show_alert=True)
+            return
+        context.user_data["order_draft"] = cart_draft
+        await query.message.reply_text(
+            "⚡ Urgent mode enabled. Item added to cart. Choose your delivery hall to continue checkout.",
+            parse_mode="HTML",
+        )
+        await _send_hall_selection(update, context, from_cart=True)
+        return
+
+    lines, total, _ = _cart_lines_and_total(context)
+    await query.message.reply_text(
+        "🛍️ Added to cart. You can keep shopping or checkout now.",
+        parse_mode="HTML",
+    )
+    await query.message.reply_text(
+        format_cart_view(lines, total),
+        parse_mode="HTML",
+        reply_markup=_cart_keyboard(context),
+    )
+
+
+async def cart_adjust_quantity_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    parts = query.data.split(":")
+    if len(parts) != 3:
+        await query.answer("Invalid cart action.", show_alert=True)
+        return
+
+    _, direction, item_id_text = parts
+    try:
+        item_id = int(item_id_text)
+    except ValueError:
+        await query.answer("Invalid item.", show_alert=True)
+        return
+
+    cart = _get_cart(context)
+    current_quantity = int(cart.get(item_id, 0))
+    if direction == "inc":
+        cart[item_id] = current_quantity + 1
+    else:
+        new_quantity = current_quantity - 1
+        if new_quantity <= 0:
+            cart.pop(item_id, None)
+        else:
+            cart[item_id] = new_quantity
+    context.user_data["cart"] = cart
+
+    lines, total, _ = _cart_lines_and_total(context)
+    if not lines:
+        await _edit_or_send_callback_message(
+            query,
+            format_empty_cart(),
+            parse_mode="HTML",
+            reply_markup=cart_actions_keyboard(),
+        )
+        return
+
+    await _edit_or_send_callback_message(
+        query,
+        format_cart_view(lines, total),
+        parse_mode="HTML",
+        reply_markup=_cart_keyboard(context),
+    )
 
 
 async def become_waiter(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2212,6 +2859,12 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get("admin_invite_mode"):
         await admin_invite_router(update, context)
         return
+    if context.user_data.get("prime_mode"):
+        await prime_chat_router(update, context)
+        return
+    if context.user_data.get("cart_room_mode"):
+        await order_room_step(update, context)
+        return
     await home_button_router(update, context)
 
 
@@ -2611,7 +3264,7 @@ async def admin_panel_callback(update: Update, context: ContextTypes.DEFAULT_TYP
                     text=(
                         "✅ Your waiter registration has been approved.\n\n"
                         f"Your waiter code: {waiter_code}\n"
-                        "Use Become a Waiter > Login with Code to activate your waiter account."
+                        "Use Join Delivery Guild > Login with Code to activate your waiter account."
                     ),
                 )
             except Exception:
@@ -2659,7 +3312,7 @@ async def admin_invite_user_id_step(update: Update, context: ContextTypes.DEFAUL
             text=(
                 "✅ You have been invited as a PrimeChop waiter.\n\n"
                 f"Your waiter code: {waiter_code}\n"
-                "Tap Become a Waiter > Login with Code to activate your waiter access."
+                "Tap Join Delivery Guild > Login with Code to activate your waiter access."
             ),
         )
     except Exception:
@@ -2911,6 +3564,7 @@ async def order_vendor_callback(update: Update, context: ContextTypes.DEFAULT_TY
     draft["vendor_id"] = vendor_id
     draft["vendor_name"] = vendor["name"]
     context.user_data["order_draft"] = draft
+    context.user_data.pop("item_selection", None)
 
     items = db.list_menu_items_by_vendor(vendor_id)
     if not items:
@@ -2947,17 +3601,94 @@ async def order_item_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
             await query.edit_message_text("This menu item is no longer available.")
         return ConversationHandler.END
 
-    draft = _ensure_order_draft(context)
     vendor = db.get_vendor(item["vendor_id"]) if item["vendor_id"] else None
-    draft.update({
-        "vendor_id": item["vendor_id"],
-        "vendor_name": vendor["name"] if vendor else settings.cafeteria_name,
-        "item_id": item_id,
-        "item_name": item["name"],
-        "amount": item["price"],
-    })
-    await _send_hall_selection(update, context)
-    return ORDER_HALL
+    selection = _get_item_selection(context)
+    selection.update(
+        {
+            "vendor_id": item["vendor_id"],
+            "vendor_name": vendor["name"] if vendor else settings.cafeteria_name,
+            "item_id": item_id,
+            "item_name": item["name"],
+            "price": int(item["price"] or 0),
+            "quantity": int(selection.get("quantity") or 1),
+        }
+    )
+    context.user_data["item_selection"] = selection
+    await query.edit_message_text(
+        _build_item_selection_text(
+            item_name=selection["item_name"],
+            price=selection["price"],
+            quantity=selection["quantity"],
+            vendor_name=selection["vendor_name"],
+        ),
+        parse_mode="HTML",
+        reply_markup=_current_item_selection_keyboard(),
+    )
+    return ORDER_ITEM
+
+
+async def catalog_item_quantity_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    selection = _get_item_selection(context)
+    if not selection:
+        await query.answer("Select an item first.", show_alert=True)
+        return
+
+    current_qty = int(selection.get("quantity") or 1)
+    if query.data.endswith("qty_inc"):
+        current_qty += 1
+    else:
+        current_qty = max(1, current_qty - 1)
+    selection["quantity"] = current_qty
+    context.user_data["item_selection"] = selection
+
+    await query.edit_message_text(
+        _build_item_selection_text(
+            item_name=selection["item_name"],
+            price=int(selection["price"]),
+            quantity=current_qty,
+            vendor_name=selection["vendor_name"],
+        ),
+        parse_mode="HTML",
+        reply_markup=_current_item_selection_keyboard(),
+    )
+
+
+async def catalog_add_current_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    selection = _get_item_selection(context)
+    if not selection:
+        await query.answer("Select an item first.", show_alert=True)
+        return
+
+    item_id = int(selection["item_id"])
+    quantity = max(1, int(selection.get("quantity") or 1))
+    cart = _get_cart(context)
+    cart[item_id] = cart.get(item_id, 0) + quantity
+    context.user_data["cart"] = cart
+
+    vendor_id = selection.get("vendor_id")
+    if vendor_id:
+        vendor = db.get_vendor(int(vendor_id))
+        if vendor:
+            items = db.list_menu_items_by_vendor(int(vendor_id))
+            await query.edit_message_text(
+                format_menu_vendor_caption(vendor["name"]),
+                parse_mode="HTML",
+                reply_markup=vendor_items_keyboard(items, int(vendor_id)),
+            )
+            return
+
+    await _edit_or_send_callback_message(
+        query,
+        "Item added to cart.",
+        parse_mode="HTML",
+        reply_markup=cart_actions_keyboard(),
+    )
 
 
 async def order_hall_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2984,7 +3715,8 @@ async def order_hall_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def order_room_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
     draft = context.user_data.get("order_draft", {})
     if not draft:
-        await update.effective_message.reply_text("Order session expired. Tap Place an Order and try again.")
+        context.user_data.pop("cart_room_mode", None)
+        await update.effective_message.reply_text("Order session expired. Tap Launch Food Mission and try again.")
         return ConversationHandler.END
 
     room_text = (update.effective_message.text or "").strip().upper().replace(" ", "")
@@ -3002,11 +3734,13 @@ async def order_room_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     draft["room_number"] = room_number
     context.user_data["order_draft"] = draft
+    context.user_data.pop("cart_room_mode", None)
     await _finalize_order_checkout(update, context)
 
 
 async def order_flow_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.pop("order_draft", None)
+    context.user_data.pop("cart_room_mode", None)
     await update.effective_message.reply_text("Order flow cancelled.")
     return ConversationHandler.END
 
@@ -3137,6 +3871,9 @@ async def home_button_router(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     if normalized in {"start", "/start"}:
         await start(update, context)
+        return
+    if text == BTN_PRIME or normalized in {"prime", "prime ai", "talk to prime", "chat with prime", "/prime"}:
+        await prime_assistant(update, context)
         return
     if text == BTN_PLACE_ORDER or normalized in {"place order", "place an order", "/place_order"}:
         await place_order(update, context)
@@ -3483,6 +4220,7 @@ def main():
         await application.bot.set_my_commands(
             [
                 BotCommand("start", "Show welcome message"),
+                BotCommand("prime", "Talk to Prime"),
                 BotCommand("place_order", "Browse menu and place an order"),
                 BotCommand("view_cart", "View your cart"),
                 BotCommand("become_waiter", "Apply to become a waiter"),
@@ -3490,6 +4228,7 @@ def main():
                 BotCommand("order_history", "View recent orders"),
                 BotCommand("terms", "View terms and conditions"),
                 BotCommand("clear", "Clear recent chat messages"),
+                BotCommand("cancel", "Exit Prime chat mode"),
                 BotCommand("wallet", "Check wallet balance"),
                 BotCommand("topup", "Top up wallet balance"),
                 BotCommand("menu", "Open food menu"),
@@ -3556,6 +4295,8 @@ def main():
     )
 
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("prime", prime_assistant))
+    app.add_handler(CommandHandler("cancel", _prime_exit))
     app.add_handler(CommandHandler("admin", admin_cmd))
     app.add_handler(CommandHandler("admin_secret", admin_secret))
     app.add_handler(CommandHandler("place_order", place_order))
@@ -3587,6 +4328,12 @@ def main():
     app.add_handler(CallbackQueryHandler(admin_waiter_management_callback, pattern=r"^adminwm:.*$"))
     app.add_handler(CallbackQueryHandler(admin_panel_callback, pattern=r"^admin:.*$"))
     app.add_handler(CallbackQueryHandler(order_catalog_navigation_callback, pattern=r"^catalog:(back_vendors|back_items)$"))
+    app.add_handler(CallbackQueryHandler(catalog_item_quantity_callback, pattern=r"^catalog:(qty_inc|qty_dec)$"))
+    app.add_handler(CallbackQueryHandler(catalog_add_current_callback, pattern=r"^catalog:add_current$"))
+    app.add_handler(CallbackQueryHandler(start_recommendation_action_callback, pattern=r"^rec:(add|urgent):\d+$"))
+    app.add_handler(CallbackQueryHandler(cart_action_callback, pattern=r"^cart:(view|vendors|clear|checkout)$"))
+    app.add_handler(CallbackQueryHandler(cart_hall_callback, pattern=r"^cart:hall:\d+$"))
+    app.add_handler(CallbackQueryHandler(cart_adjust_quantity_callback, pattern=r"^cart:(inc|dec):\d+$"))
     app.add_handler(CallbackQueryHandler(waiter_portal_callback, pattern=r"^waiter_portal:(login|register)$"))
     app.add_handler(CallbackQueryHandler(claim_order_callback, pattern=r"^claim:\d+$"))
     app.add_handler(CallbackQueryHandler(waiter_complete_callback, pattern=r"^complete_claim:\d+$"))

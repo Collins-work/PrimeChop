@@ -39,6 +39,47 @@ class Database:
         text = re.sub(r"\s+", " ", text).strip()
         return text
 
+    def _infer_meal_slot(self, item_name: str) -> str:
+        name = (item_name or "").strip().lower()
+        if not name:
+            return "any"
+
+        breakfast_keywords = ("egg", "bread", "tea", "coffee", "porridge", "oats", "yam", "akara", "moi moi", "sandwich")
+        lunch_keywords = ("rice", "jollof", "fried rice", "pasta", "spaghetti", "beans", "soup", "plantain", "chicken", "beef", "fish")
+        dinner_keywords = ("noodles", "shawarma", "burger", "pizza", "salad", "snack", "chicken", "soup", "rice")
+        late_night_keywords = ("noodles", "snack", "burger", "shawarma", "pizza", "tea", "sandwich")
+
+        if any(keyword in name for keyword in breakfast_keywords):
+            return "breakfast"
+        if any(keyword in name for keyword in late_night_keywords):
+            return "late-night"
+        if any(keyword in name for keyword in lunch_keywords):
+            return "lunch"
+        if any(keyword in name for keyword in dinner_keywords):
+            return "dinner"
+        return "any"
+
+    def _normalize_meal_slot(self, meal_slot: str | None, item_name: str = "") -> str:
+        value = (meal_slot or "").strip().lower().replace("_", "-")
+        aliases = {
+            "breakfast": "breakfast",
+            "morning": "breakfast",
+            "lunch": "lunch",
+            "afternoon": "lunch",
+            "dinner": "dinner",
+            "evening": "dinner",
+            "late-night": "late-night",
+            "latenight": "late-night",
+            "night": "late-night",
+            "any": "any",
+            "all": "any",
+            "anytime": "any",
+        }
+        normalized = aliases.get(value)
+        if normalized:
+            return normalized
+        return self._infer_meal_slot(item_name)
+
     def _normalize_existing_vendors(self, conn: sqlite3.Connection):
         now = self.now_iso()
         vendors = conn.execute("SELECT id, name FROM vendors ORDER BY id ASC").fetchall()
@@ -120,6 +161,8 @@ class Database:
         }
         if "vendor_id" not in columns:
             conn.execute("ALTER TABLE menu_items ADD COLUMN vendor_id INTEGER")
+        if "meal_slot" not in columns:
+            conn.execute("ALTER TABLE menu_items ADD COLUMN meal_slot TEXT DEFAULT 'any'")
 
     def _ensure_user_columns(self, conn: sqlite3.Connection):
         columns = {
@@ -168,6 +211,7 @@ class Database:
                     vendor_id INTEGER,
                     name TEXT NOT NULL,
                     price INTEGER NOT NULL,
+                    meal_slot TEXT DEFAULT 'any',
                     image_file_id TEXT,
                     image_url TEXT,
                     active INTEGER DEFAULT 1,
@@ -610,15 +654,24 @@ class Database:
             )
             return True
 
-    def add_menu_item(self, vendor_id: int, name: str, price: int, image_file_id: str | None, image_url: str | None):
+    def add_menu_item(
+        self,
+        vendor_id: int,
+        name: str,
+        price: int,
+        image_file_id: str | None,
+        image_url: str | None,
+        meal_slot: str | None = None,
+    ):
         now = self.now_iso()
+        normalized_slot = self._normalize_meal_slot(meal_slot, name)
         with self.connection() as conn:
             cursor = conn.execute(
                 """
-                INSERT INTO menu_items (vendor_id, name, price, image_file_id, image_url, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO menu_items (vendor_id, name, price, meal_slot, image_file_id, image_url, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (vendor_id, name, price, image_file_id, image_url, now, now),
+                (vendor_id, name, price, normalized_slot, image_file_id, image_url, now, now),
             )
             return int(cursor.lastrowid)
 
@@ -658,18 +711,27 @@ class Database:
                 ).fetchone()
 
                 if existing:
+                    inferred_slot = self._infer_meal_slot(name)
                     conn.execute(
-                        "UPDATE menu_items SET active=1, image_url=COALESCE(image_url, ?), updated_at=? WHERE id=?",
-                        (default_image_url, now, existing["id"]),
+                        """
+                        UPDATE menu_items
+                        SET active=1,
+                            image_url=COALESCE(image_url, ?),
+                            meal_slot=COALESCE(NULLIF(meal_slot, ''), ?),
+                            updated_at=?
+                        WHERE id=?
+                        """,
+                        (default_image_url, inferred_slot, now, existing["id"]),
                     )
                     continue
 
+                inferred_slot = self._infer_meal_slot(name)
                 conn.execute(
                     """
-                    INSERT INTO menu_items (vendor_id, name, price, image_file_id, image_url, active, created_at, updated_at)
-                    VALUES (?, ?, ?, NULL, ?, 1, ?, ?)
+                    INSERT INTO menu_items (vendor_id, name, price, meal_slot, image_file_id, image_url, active, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, NULL, ?, 1, ?, ?)
                     """,
-                    (vendor_id, name, price, default_image_url, now, now),
+                    (vendor_id, name, price, inferred_slot, default_image_url, now, now),
                 )
 
     def list_menu_items(self) -> list[sqlite3.Row]:
@@ -732,11 +794,18 @@ class Database:
             return cursor.rowcount > 0
 
     def update_menu_item(self, item_id: int, **kwargs) -> bool:
-        """Update menu item fields. Supported: name, price, vendor_id, image_url, image_file_id, active."""
-        allowed_fields = {"name", "price", "vendor_id", "image_url", "image_file_id", "active"}
+        """Update menu item fields. Supported: name, price, meal_slot, vendor_id, image_url, image_file_id, active."""
+        allowed_fields = {"name", "price", "meal_slot", "vendor_id", "image_url", "image_file_id", "active"}
         updates = {k: v for k, v in kwargs.items() if k in allowed_fields}
         if not updates:
             return False
+
+        if "meal_slot" in updates:
+            normalized_name = str(updates.get("name") or "")
+            if not normalized_name:
+                existing_item = self.get_menu_item(item_id)
+                normalized_name = (existing_item["name"] if existing_item else "")
+            updates["meal_slot"] = self._normalize_meal_slot(str(updates.get("meal_slot") or ""), normalized_name)
 
         now = self.now_iso()
         updates["updated_at"] = now
@@ -892,33 +961,95 @@ class Database:
                 (customer_id, limit),
             ).fetchall()
 
-    def list_customer_active_orders(self, customer_id: int, limit: int = 10) -> list[sqlite3.Row]:
+    def list_customer_active_orders(self, customer_id: int, limit: int | None = None) -> list[sqlite3.Row]:
+        query = """
+            SELECT
+                o.id,
+                o.order_ref,
+                o.item_id,
+                o.amount,
+                o.order_details,
+                o.room_number,
+                o.hall_name,
+                o.delivery_time,
+                o.payment_method,
+                o.payment_provider,
+                o.payment_tx_ref,
+                o.payment_link,
+                o.status,
+                m.name AS item_name,
+                o.created_at
+            FROM orders o
+            LEFT JOIN menu_items m ON m.id = o.item_id
+            WHERE o.customer_id=? AND o.status IN ('pending_payment', 'pending_waiter', 'claimed')
+            ORDER BY o.id DESC
+        """
+        params: tuple[int, ...] | tuple[int, int]
+        params = (customer_id,)
+        if limit is not None:
+            query += "\nLIMIT ?"
+            params = (customer_id, limit)
+
+        with self.connection() as conn:
+            return conn.execute(query, params).fetchall()
+
+    def clear_customer_pending_cart_orders(self, customer_id: int) -> int:
+        """Cancel unpaid cart orders for a customer and return affected count."""
+        now = self.now_iso()
+        with self.connection() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE orders
+                SET status='cancelled', updated_at=?
+                WHERE customer_id=? AND status='pending_payment'
+                """,
+                (now, customer_id),
+            )
+            return int(cursor.rowcount or 0)
+
+    def list_customer_top_picks(self, customer_id: int, limit: int = 5) -> list[sqlite3.Row]:
         with self.connection() as conn:
             return conn.execute(
                 """
                 SELECT
-                    o.id,
-                    o.order_ref,
                     o.item_id,
-                    o.amount,
-                    o.order_details,
-                    o.room_number,
-                    o.hall_name,
-                    o.delivery_time,
-                    o.payment_method,
-                    o.payment_provider,
-                    o.payment_tx_ref,
-                    o.payment_link,
-                    o.status,
-                    m.name AS item_name,
-                    o.created_at
+                    COALESCE(m.name, 'Unknown item') AS name,
+                    COALESCE(v.name, 'Unknown vendor') AS vendor_name,
+                    COALESCE(m.price, 0) AS price,
+                    COUNT(*) AS order_count,
+                    MAX(o.created_at) AS latest_order_at
                 FROM orders o
                 LEFT JOIN menu_items m ON m.id = o.item_id
-                WHERE o.customer_id=? AND o.status IN ('pending_payment', 'pending_waiter', 'claimed')
-                ORDER BY o.id DESC
+                LEFT JOIN vendors v ON v.id = m.vendor_id
+                WHERE o.customer_id=?
+                  AND COALESCE(o.status, '') NOT IN ('cancelled', 'canceled')
+                GROUP BY o.item_id, m.name, v.name, m.price
+                ORDER BY order_count DESC, latest_order_at DESC, name ASC
                 LIMIT ?
                 """,
                 (customer_id, limit),
+            ).fetchall()
+
+    def list_trending_menu_items(self, limit: int = 5) -> list[sqlite3.Row]:
+        with self.connection() as conn:
+            return conn.execute(
+                """
+                SELECT
+                    o.item_id,
+                    COALESCE(m.name, 'Unknown item') AS name,
+                    COALESCE(v.name, 'Unknown vendor') AS vendor_name,
+                    COALESCE(m.price, 0) AS price,
+                    COUNT(*) AS order_count,
+                    MAX(o.created_at) AS latest_order_at
+                FROM orders o
+                LEFT JOIN menu_items m ON m.id = o.item_id
+                LEFT JOIN vendors v ON v.id = m.vendor_id
+                WHERE COALESCE(o.status, '') NOT IN ('cancelled', 'canceled')
+                GROUP BY o.item_id, m.name, v.name, m.price
+                ORDER BY order_count DESC, latest_order_at DESC, name ASC
+                LIMIT ?
+                """,
+                (limit,),
             ).fetchall()
 
     def list_unclaimed_paid_orders(self, limit: int = 20) -> list[sqlite3.Row]:
