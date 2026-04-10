@@ -1083,8 +1083,8 @@ def _catalog_item_actions_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton("Quantity -1", callback_data="catalog:qty_dec"),
                 InlineKeyboardButton("Quantity +1", callback_data="catalog:qty_inc"),
             ],
-            [InlineKeyboardButton("Add to Mission Cart", callback_data="catalog:add_current")],
-            [InlineKeyboardButton("Open Mission Cart", callback_data="cart:view")],
+            [InlineKeyboardButton("Add to Cart", callback_data="catalog:add_current")],
+            [InlineKeyboardButton("View Cart", callback_data="cart:view")],
             [InlineKeyboardButton("Back to Items", callback_data="catalog:back_items")],
         ]
     )
@@ -1229,7 +1229,7 @@ async def _send_hall_selection(update: Update, context: ContextTypes.DEFAULT_TYP
 async def _finalize_order_checkout(update: Update, context: ContextTypes.DEFAULT_TYPE):
     draft = context.user_data.get("order_draft", {})
     if not draft:
-        await update.effective_message.reply_text("Order session expired. Tap Launch Food Mission and try again.")
+        await update.effective_message.reply_text("Order session expired. Tap Place an Order and try again.")
         return ConversationHandler.END
 
     user = update.effective_user
@@ -1970,6 +1970,34 @@ def _build_start_recommendations(user_id: int) -> tuple[str, list[dict]]:
     return period_label, recommendations
 
 
+def _build_public_recommendation_description() -> str:
+    now = datetime.now(db.tz)
+    period_label = _meal_period_label(now)
+    trending_rows = db.list_trending_menu_items(limit=3)
+
+    if not trending_rows:
+        return (
+            f"🍽️ PrimeChop - {period_label} Meal Radar\n"
+            "Today's picks are loading from campus kitchens.\n"
+            "Use /start for personalized recommendations and urgent checkout."
+        )
+
+    picks = []
+    for row in trending_rows[:2]:
+        item_name = row["name"] or "Popular meal"
+        vendor_name = row["vendor_name"] or settings.cafeteria_name
+        picks.append(f"• {item_name} ({vendor_name})")
+
+    return "\n".join(
+        [
+            f"🍽️ PrimeChop - {period_label} Meal Radar",
+            "Trending picks among students:",
+            *picks,
+            "Use /start for your personal picks + urgent checkout.",
+        ]
+    )
+
+
 async def send_start_banner(update: Update, role: str):
     message = update.effective_message
     period_label, recommendations = _build_start_recommendations(update.effective_user.id)
@@ -2302,7 +2330,7 @@ async def start_recommendation_action_callback(update: Update, context: ContextT
             return
         context.user_data["order_draft"] = cart_draft
         await query.message.reply_text(
-            "⚡ Urgent mode enabled. Item added to cart. Choose your delivery hall to continue checkout.",
+            "Urgent checkout enabled. Item added to cart. Choose your delivery hall to continue.",
             parse_mode="HTML",
         )
         await _send_hall_selection(update, context, from_cart=True)
@@ -3264,7 +3292,7 @@ async def admin_panel_callback(update: Update, context: ContextTypes.DEFAULT_TYP
                     text=(
                         "✅ Your waiter registration has been approved.\n\n"
                         f"Your waiter code: {waiter_code}\n"
-                        "Use Join Delivery Guild > Login with Code to activate your waiter account."
+                        "Use Become a Waiter > Login with Code to activate your waiter account."
                     ),
                 )
             except Exception:
@@ -3312,7 +3340,7 @@ async def admin_invite_user_id_step(update: Update, context: ContextTypes.DEFAUL
             text=(
                 "✅ You have been invited as a PrimeChop waiter.\n\n"
                 f"Your waiter code: {waiter_code}\n"
-                "Tap Join Delivery Guild > Login with Code to activate your waiter access."
+                "Tap Become a Waiter > Login with Code to activate your waiter access."
             ),
         )
     except Exception:
@@ -3716,7 +3744,7 @@ async def order_room_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
     draft = context.user_data.get("order_draft", {})
     if not draft:
         context.user_data.pop("cart_room_mode", None)
-        await update.effective_message.reply_text("Order session expired. Tap Launch Food Mission and try again.")
+        await update.effective_message.reply_text("Order session expired. Tap Place an Order and try again.")
         return ConversationHandler.END
 
     room_text = (update.effective_message.text or "").strip().upper().replace(" ", "")
@@ -4206,16 +4234,9 @@ def main():
     logger.info("✅ Event loop ready")
 
     async def post_init(application: Application):
-        await application.bot.set_my_description(
-            (
-                "🍽️ PrimeChop - Daily Smart Meal Recommendations\n"
-                "Get suggestions based on time of day, your top picks, and trending dishes.\n"
-                "Add recommended meals to cart instantly and use urgent checkout when needed.\n"
-                "Use /start to see today's personalized meal radar."
-            )
-        )
+        await application.bot.set_my_description(_build_public_recommendation_description())
         await application.bot.set_my_short_description(
-            "Personalized meal picks with fast cart and urgent checkout."
+            "Daily meal radar with fast add-to-cart and urgent checkout."
         )
         await application.bot.set_my_commands(
             [
