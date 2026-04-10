@@ -4208,14 +4208,14 @@ def main():
     async def post_init(application: Application):
         await application.bot.set_my_description(
             (
-                "🍽️ PrimeChop – Your Smart Dining Companion\n"
-                "Order meals and manage requests with ease.\n"
-                "Fast updates, smooth coordination, and fewer mistakes.\n"
-                "Simple. Efficient. Reliable. ✨"
+                "🍽️ PrimeChop - Daily Smart Meal Recommendations\n"
+                "Get suggestions based on time of day, your top picks, and trending dishes.\n"
+                "Add recommended meals to cart instantly and use urgent checkout when needed.\n"
+                "Use /start to see today's personalized meal radar."
             )
         )
         await application.bot.set_my_short_description(
-            "PrimeChop - Smart dining, smooth delivery, reliable service."
+            "Personalized meal picks with fast cart and urgent checkout."
         )
         await application.bot.set_my_commands(
             [
