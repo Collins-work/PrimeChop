@@ -190,6 +190,92 @@ PRIME_RIDDLES = [
     },
 ]
 
+FOOD_QUIZ_QUESTIONS = [
+    {
+        "question": "Which vegetable is known as 'nature's perfect snack' and is rich in potassium?",
+        "options": ["Carrot", "Banana", "Broccoli", "Spinach"],
+        "answer": "Banana",
+    },
+    {
+        "question": "What ingredient is essential in Italian pasta carbonara?",
+        "options": ["Cream", "Eggs", "Milk", "Butter"],
+        "answer": "Eggs",
+    },
+    {
+        "question": "Which spice is the most expensive in the world?",
+        "options": ["Cinnamon", "Saffron", "Cardamom", "Turmeric"],
+        "answer": "Saffron",
+    },
+    {
+        "question": "What is the main ingredient in hummus?",
+        "options": ["Lentils", "Chickpeas", "Black beans", "Peas"],
+        "answer": "Chickpeas",
+    },
+    {
+        "question": "Which country is famous for originating sushi?",
+        "options": ["China", "Korea", "Japan", "Thailand"],
+        "answer": "Japan",
+    },
+    {
+        "question": "What is the main protein source in tofu?",
+        "options": ["Soy", "Milk", "Nuts", "Grains"],
+        "answer": "Soy",
+    },
+    {
+        "question": "Which fruit is known for its vitamin C content and was used to prevent scurvy?",
+        "options": ["Apple", "Orange", "Lime", "Strawberry"],
+        "answer": "Lime",
+    },
+    {
+        "question": "What is the traditional grain used to make risotto?",
+        "options": ["Wheat", "Barley", "Arborio rice", "Quinoa"],
+        "answer": "Arborio rice",
+    },
+]
+
+GUESS_THE_DISH_PUZZLES = [
+    {
+        "puzzle": "🍕 + 🧀 + 🍅 = ?",
+        "answers": {"pizza"},
+        "hint": "Popular Italian dish with a crispy crust.",
+    },
+    {
+        "puzzle": "🍜 + 🥢 + 🌶️ = ?",
+        "answers": {"noodles", "ramen"},
+        "hint": "Asian dish served in a bowl.",
+    },
+    {
+        "puzzle": "🍔 + 🥬 + 🍅 = ?",
+        "answers": {"burger", "hamburger"},
+        "hint": "Popular fast food sandwich.",
+    },
+    {
+        "puzzle": "🌮 + 🥩 + 🧅 = ?",
+        "answers": {"taco", "tacos"},
+        "hint": "Mexican-inspired handheld meal.",
+    },
+    {
+        "puzzle": "🍝 + 🍅 + 🧄 = ?",
+        "answers": {"pasta", "spaghetti"},
+        "hint": "Italian noodle dish.",
+    },
+    {
+        "puzzle": "🍣 + 🍚 + 🥒 = ?",
+        "answers": {"sushi"},
+        "hint": "Japanese rice delicacy.",
+    },
+    {
+        "puzzle": "🥗 + 🥕 + 🥬 = ?",
+        "answers": {"salad"},
+        "hint": "Healthy vegetable dish.",
+    },
+    {
+        "puzzle": "🥙 + 🌯 + 🧅 = ?",
+        "answers": {"wrap", "kebab", "shawarma"},
+        "hint": "Handheld Middle Eastern meal.",
+    },
+]
+
 
 def _prime_normalize(text: str) -> str:
     return re.sub(r"\s+", " ", (text or "").strip().lower())
@@ -229,10 +315,39 @@ def _prime_start_riddle(context: ContextTypes.DEFAULT_TYPE) -> str:
     )
 
 
-def _prime_start_coin_flip() -> str:
-    result = random.choice(["Heads", "Tails"])
-    emoji = "🪙"
-    return f"{emoji} <b>Coin Flip</b>\n\nIt landed on <b>{result}</b>. Want another game?"
+def _prime_start_food_quiz(context: ContextTypes.DEFAULT_TYPE) -> str:
+    quiz = random.choice(FOOD_QUIZ_QUESTIONS)
+    options_text = "\n".join([f"<b>{chr(65+i)})</b> {opt}" for i, opt in enumerate(quiz["options"])])
+    context.user_data["prime_game"] = {
+        "kind": "food_quiz",
+        "question": quiz["question"],
+        "answer": quiz["answer"],
+        "options": quiz["options"],
+        "attempts": 0,
+    }
+    return (
+        "🍽️ <b>Food Quiz Challenge!</b>\n\n"
+        f"{quiz['question']}\n\n"
+        f"{options_text}\n\n"
+        "Reply with A, B, C, or D to answer!"
+    )
+
+
+def _prime_start_guess_dish(context: ContextTypes.DEFAULT_TYPE) -> str:
+    puzzle = random.choice(GUESS_THE_DISH_PUZZLES)
+    context.user_data["prime_game"] = {
+        "kind": "guess_dish",
+        "puzzle": puzzle["puzzle"],
+        "answers": set(puzzle["answers"]),
+        "hint": puzzle["hint"],
+        "attempts": 0,
+    }
+    return (
+        "🍴 <b>Guess the Dish!</b>\n\n"
+        f"{puzzle['puzzle']}\n\n"
+        "What dish does this represent?\n"
+        "Type your answer, or send <b>hint</b> / <b>skip</b>."
+    )
 
 
 def _prime_game_reply(text: str, context: ContextTypes.DEFAULT_TYPE) -> str | None:
@@ -258,15 +373,55 @@ def _prime_game_reply(text: str, context: ContextTypes.DEFAULT_TYPE) -> str | No
             return f"💞 Nice try. The answer was <b>{answer}</b>. Tap <b>{BTN_PRIME_GAME}</b> for a new challenge."
         return "Not quite, sweet pea. Try again, or send <b>hint</b>."
 
-    if normalized in {"riddle", "quiz"}:
+    if game_state and game_state.get("kind") == "food_quiz":
+        answer_map = {chr(65+i): opt for i, opt in enumerate(game_state["options"])}
+        user_answer = normalized.upper()
+        
+        if user_answer in answer_map:
+            selected = answer_map[user_answer]
+            context.user_data.pop("prime_game", None)
+            if selected == game_state["answer"]:
+                return f"🎉 <b>Correct!</b> <b>{selected}</b> is right! Earn points for your next order. Tap <b>{BTN_PRIME_GAME}</b> for more challenges!"
+            return f"❌ Oops! The answer was <b>{game_state['answer']}</b>. Try the next quiz question. Tap <b>{BTN_PRIME_GAME}</b>."
+        
+        if normalized in {"skip", "pass", "answer", "show answer"}:
+            context.user_data.pop("prime_game", None)
+            return f"⭐ The answer was <b>{game_state['answer']}</b>. Want another quiz? Tap <b>{BTN_PRIME_GAME}</b>."
+        
+        return "Please reply with <b>A</b>, <b>B</b>, <b>C</b>, or <b>D</b>."
+
+    if game_state and game_state.get("kind") == "guess_dish":
+        if normalized in {"hint", "give me a hint"}:
+            return f"💡 <b>Hint</b>\n\n{game_state['hint']}"
+        if normalized in {"skip", "pass", "answer", "show answer"}:
+            answer = next(iter(game_state["answers"]))
+            context.user_data.pop("prime_game", None)
+            return f"⭐ The answer was <b>{answer.title()}</b>. Want to guess another? Tap <b>{BTN_PRIME_GAME}</b>."
+
+        if normalized in game_state["answers"]:
+            context.user_data.pop("prime_game", None)
+            return f"🎉 <b>Correct!</b> You guessed it right! Get a small discount on your next order. Tap <b>{BTN_PRIME_GAME}</b> for another meal puzzle."
+
+        game_state["attempts"] = int(game_state.get("attempts", 0)) + 1
+        if game_state["attempts"] >= 3:
+            answer = next(iter(game_state["answers"]))
+            context.user_data.pop("prime_game", None)
+            return f"💝 Almost there! The answer was <b>{answer.title()}</b>. Tap <b>{BTN_PRIME_GAME}</b> for a new challenge."
+        return "Hmm, not quite. Try again or send <b>hint</b>!"
+
+    if normalized in {"riddle", "ridddle"}:
         return _prime_start_riddle(context)
-    if normalized in {"coin", "coin flip", "flip", "flip a coin"}:
-        return _prime_start_coin_flip()
+    if normalized in {"quiz", "food quiz", "food"}:
+        return _prime_start_food_quiz(context)
+    if normalized in {"guess", "guess dish", "dish", "emoji"}:
+        return _prime_start_guess_dish(context)
     if normalized in {"game", "play", "play game", "games", BTN_PRIME_GAME.lower()}:
-        game_choice = random.choice(["riddle", "coin"])
+        game_choice = random.choice(["riddle", "food_quiz", "guess_dish"])
         if game_choice == "riddle":
             return _prime_start_riddle(context)
-        return _prime_start_coin_flip()
+        elif game_choice == "food_quiz":
+            return _prime_start_food_quiz(context)
+        return _prime_start_guess_dish(context)
     return None
 
 
@@ -301,10 +456,16 @@ async def prime_chat_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _prime_exit(update, context)
         return
 
-    if text == BTN_PRIME_GAME or normalized in {"play a game", "game", "play game", "games", "riddle", "quiz", "coin", "flip"}:
+    if text == BTN_PRIME_GAME or normalized in {"play a game", "game", "play game", "games", "riddle", "quiz", "food quiz", "guess dish"}:
         reply = _prime_game_reply(text, context)
         if reply is None:
-            reply = _prime_start_coin_flip()
+            game_choice = random.choice(["riddle", "food_quiz", "guess_dish"])
+            if game_choice == "riddle":
+                reply = _prime_start_riddle(context)
+            elif game_choice == "food_quiz":
+                reply = _prime_start_food_quiz(context)
+            else:
+                reply = _prime_start_guess_dish(context)
         await update.effective_message.reply_text(reply, parse_mode="HTML", reply_markup=prime_keyboard())
         return
 
