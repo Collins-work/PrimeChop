@@ -150,6 +150,15 @@ Google setup notes:
 3. Put the JSON key path in `GOOGLE_SHEETS_CREDENTIALS_FILE`.
 4. Put the sheet id (from the URL) in `GOOGLE_SHEETS_SPREADSHEET_ID`.
 
+Prime assistant AI fallback (answer broader/general questions):
+- `PRIME_AI_ENABLED=true`
+- `PRIME_AI_API_KEY=<your-api-key>`
+- `PRIME_AI_CHAT_URL=https://openrouter.ai/api/v1/chat/completions` (or any OpenAI-compatible chat completions endpoint)
+- `PRIME_AI_MODEL=openai/gpt-4o-mini` (or another model from your provider)
+- `PRIME_AI_TIMEOUT_SECONDS=20`
+
+If `PRIME_AI_API_KEY` is empty, Prime first tries a lightweight web fact lookup and then falls back to scripted local replies.
+
 Tracked sheets and data:
 - `OrdersAudit`
   - Appends a new row for each event: `order_created`, `payment_confirmed`, `order_claimed`, `order_completed`.

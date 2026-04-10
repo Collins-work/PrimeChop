@@ -97,6 +97,11 @@ class Settings:
     lightweight_mode: bool
     allowed_updates: list[str]
     startup_waiter_sync_limit: int
+    prime_ai_enabled: bool
+    prime_ai_api_key: str
+    prime_ai_chat_url: str
+    prime_ai_model: str
+    prime_ai_timeout_seconds: float
 
 
 settings = Settings(
@@ -164,6 +169,11 @@ settings = Settings(
     allowed_updates=_parse_csv_list(os.getenv("ALLOWED_UPDATES", "message,callback_query"))
     or ["message", "callback_query"],
     startup_waiter_sync_limit=max(100, int(os.getenv("STARTUP_WAITER_SYNC_LIMIT", "500"))),
+    prime_ai_enabled=_parse_bool(os.getenv("PRIME_AI_ENABLED", "true"), default=True),
+    prime_ai_api_key=os.getenv("PRIME_AI_API_KEY", "").strip(),
+    prime_ai_chat_url=os.getenv("PRIME_AI_CHAT_URL", "https://openrouter.ai/api/v1/chat/completions").strip(),
+    prime_ai_model=os.getenv("PRIME_AI_MODEL", "openai/gpt-4o-mini").strip(),
+    prime_ai_timeout_seconds=max(5.0, float(os.getenv("PRIME_AI_TIMEOUT_SECONDS", "20"))),
 )
 
 if not settings.telegram_bot_token:
