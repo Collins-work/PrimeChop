@@ -157,6 +157,21 @@ Prime assistant AI fallback (answer broader/general questions):
 - `PRIME_AI_MODEL=openai/gpt-4o-mini` (or another model from your provider)
 - `PRIME_AI_TIMEOUT_SECONDS=20`
 
+Prime AI behavior notes:
+- Prime now uses a stronger system prompt and short chat memory so responses feel more like a normal general AI assistant (less rigid keyword replies).
+- Prime includes approved PrimeChop background context (origin story and mission) for history-style user questions.
+- If the AI endpoint fails, Prime falls back to local/service replies so users still get help.
+
+How to "train" or customize Prime AI:
+1. Prompt tuning (fastest): edit the system prompt in [app.py](app.py) to add behavior rules, tone, and trusted facts.
+2. Knowledge tuning (safe): add short factual context blocks (company history, policies, FAQs) and keep them updated.
+3. Retrieval style (best for growth): store FAQs/policies in a small local data file or DB table, then inject only relevant facts into each AI request.
+4. Fine-tuning (advanced): useful when you have a large, high-quality dataset and stable use-cases; most bots perform well with prompt + retrieval first.
+
+Suggested model/endpoints for OpenAI direct usage:
+- `PRIME_AI_CHAT_URL=https://api.openai.com/v1/chat/completions`
+- `PRIME_AI_MODEL=gpt-4o-mini` (balanced) or `gpt-4.1-mini` (if available on your account)
+
 If `PRIME_AI_API_KEY` is empty, Prime first tries a lightweight web fact lookup and then falls back to scripted local replies.
 
 Tracked sheets and data:
