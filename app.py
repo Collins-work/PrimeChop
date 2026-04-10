@@ -124,6 +124,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+TELEGRAM_TEXT_SOFT_LIMIT = 3800
+ADMIN_CATALOG_PAGE_SIZE = 12
+
 # This conversation mixes callback queries and text input by design (room entry).
 # Keep per_message at default and silence the advisory warning.
 warnings.filterwarnings(
@@ -1294,19 +1297,114 @@ def admin_catalog_detail_keyboard(item_id: int) -> InlineKeyboardMarkup:
 
 def admin_catalog_items_keyboard(items: list) -> InlineKeyboardMarkup:
     """Keyboard for selecting and managing menu items."""
+    return admin_catalog_items_keyboard_paged(items, page=0)
+
+
+def admin_catalog_items_keyboard_paged(items: list, page: int) -> InlineKeyboardMarkup:
+    """Keyboard for selecting and managing menu items with lightweight paging."""
+    total = len(items)
+    total_pages = max(1, (total + ADMIN_CATALOG_PAGE_SIZE - 1) // ADMIN_CATALOG_PAGE_SIZE)
+    page = max(0, min(page, total_pages - 1))
+    start = page * ADMIN_CATALOG_PAGE_SIZE
+    end = start + ADMIN_CATALOG_PAGE_SIZE
+
     rows = []
-    for item in items:
-        rows.append([InlineKeyboardButton(f"#{item['id']} - {item['name']}", callback_data=f"admin:catalog_item:{item['id']}")])
+    for item in items[start:end]:
+        short_name = str(item["name"])
+        if len(short_name) > 36:
+            short_name = f"{short_name[:33]}..."
+        rows.append([InlineKeyboardButton(f"#{item['id']} - {short_name}", callback_data=f"admin:catalog_item:{item['id']}")])
+
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton("◀️ Prev", callback_data=f"admin:catalog_view_items:{page-1}"))
+    if page < total_pages - 1:
+        nav.append(InlineKeyboardButton("Next ▶️", callback_data=f"admin:catalog_view_items:{page+1}"))
+    if nav:
+        rows.append(nav)
+
     rows.append([InlineKeyboardButton("🔙 Back to Catalog", callback_data="admin:menu_catalog")])
     return InlineKeyboardMarkup(rows)
 
 
 def admin_catalog_vendors_keyboard(vendors: list) -> InlineKeyboardMarkup:
+    return admin_catalog_vendors_keyboard_paged(vendors, page=0)
+
+
+def admin_catalog_vendors_keyboard_paged(vendors: list, page: int) -> InlineKeyboardMarkup:
+    total = len(vendors)
+    total_pages = max(1, (total + ADMIN_CATALOG_PAGE_SIZE - 1) // ADMIN_CATALOG_PAGE_SIZE)
+    page = max(0, min(page, total_pages - 1))
+    start = page * ADMIN_CATALOG_PAGE_SIZE
+    end = start + ADMIN_CATALOG_PAGE_SIZE
+
     rows = []
-    for vendor in vendors:
-        rows.append([InlineKeyboardButton(vendor["name"], callback_data=f"admin:catalog_vendor:{vendor['id']}")])
+    for vendor in vendors[start:end]:
+        short_name = str(vendor["name"])
+        if len(short_name) > 44:
+            short_name = f"{short_name[:41]}..."
+        rows.append([InlineKeyboardButton(short_name, callback_data=f"admin:catalog_vendor:{vendor['id']}")])
+
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton("◀️ Prev", callback_data=f"admin:catalog_list_vendors:{page-1}"))
+    if page < total_pages - 1:
+        nav.append(InlineKeyboardButton("Next ▶️", callback_data=f"admin:catalog_list_vendors:{page+1}"))
+    if nav:
+        rows.append(nav)
+
     rows.append([InlineKeyboardButton("🔙 Back to Catalog", callback_data="admin:menu_catalog")])
     return InlineKeyboardMarkup(rows)
+
+
+def _format_admin_catalog_items_page(items: list, page: int, total_items: int) -> str:
+    total_pages = max(1, (total_items + ADMIN_CATALOG_PAGE_SIZE - 1) // ADMIN_CATALOG_PAGE_SIZE)
+    page = max(0, min(page, total_pages - 1))
+    if not items:
+        return "🍽️ <b>Menu Items</b>\n\nNo menu items found."
+
+    lines = [
+        "🍽️ <b>Menu Items</b>",
+        f"Page {page + 1}/{total_pages} • Showing {len(items)} of {total_items}",
+        "",
+    ]
+    for item in items:
+        vendor_name = item["vendor_name"] or "Unknown"
+        active = "✅" if int(item["active"] or 0) == 1 else "❌"
+        lines.append(f"{active} <b>#{item['id']}</b> - {item['name']}")
+        lines.append(f"   {vendor_name} • ₦{int(item['price'] or 0):,}")
+    return "\n".join(lines)
+
+
+def _format_admin_catalog_vendors_page(vendors: list, page: int, total_vendors: int) -> str:
+    total_pages = max(1, (total_vendors + ADMIN_CATALOG_PAGE_SIZE - 1) // ADMIN_CATALOG_PAGE_SIZE)
+    page = max(0, min(page, total_pages - 1))
+    if not vendors:
+        return "🏪 <b>Vendors</b>\n\nNo active vendors found."
+
+    lines = [
+        "🏪 <b>Active Vendors</b>",
+        f"Page {page + 1}/{total_pages} • Showing {len(vendors)} of {total_vendors}",
+        "",
+    ]
+    start_index = page * ADMIN_CATALOG_PAGE_SIZE
+    for offset, vendor in enumerate(vendors, start=1):
+        lines.append(f"{start_index + offset}. {vendor['name']}")
+    return "\n".join(lines)
+
+
+def _strip_html(text: str) -> str:
+    return re.sub(r"<[^>]+>", "", text or "")
+
+
+def _prepare_callback_text(text: str, parse_mode: str):
+    if len(text or "") <= TELEGRAM_TEXT_SOFT_LIMIT:
+        return text, parse_mode
+
+    plain = _strip_html(text)
+    if len(plain) > TELEGRAM_TEXT_SOFT_LIMIT:
+        plain = plain[: TELEGRAM_TEXT_SOFT_LIMIT - 32].rstrip() + "\n\n...truncated for speed."
+    return plain, None
 
 
 def admin_vendor_detail_keyboard(vendor_id: int) -> InlineKeyboardMarkup:
@@ -2527,16 +2625,20 @@ async def _edit_or_send_callback_message(
     reply_markup=None,
 ):
     """Prefer editing the callback message; fall back to sending a new one when editing is unavailable."""
+    prepared_text, prepared_parse_mode = _prepare_callback_text(text, parse_mode)
     try:
         await query.edit_message_text(
-            text=text,
-            parse_mode=parse_mode,
+            text=prepared_text,
+            parse_mode=prepared_parse_mode,
             reply_markup=reply_markup,
         )
-    except Exception:
+    except TelegramError as exc:
+        if "message is not modified" in str(exc).lower():
+            return
+        fallback_text, fallback_parse_mode = _prepare_callback_text(_strip_html(text), None)
         await query.message.reply_text(
-            text=text,
-            parse_mode=parse_mode,
+            text=fallback_text,
+            parse_mode=fallback_parse_mode,
             reply_markup=reply_markup,
         )
 
@@ -3476,13 +3578,21 @@ async def admin_panel_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         )
         return
 
-    if data == "admin:catalog_list_vendors":
+    if data == "admin:catalog_list_vendors" or data.startswith("admin:catalog_list_vendors:"):
+        page = 0
+        if data.startswith("admin:catalog_list_vendors:"):
+            try:
+                page = max(0, int(data.rsplit(":", 1)[1]))
+            except ValueError:
+                page = 0
         vendors = db.list_vendors()
+        start = page * ADMIN_CATALOG_PAGE_SIZE
+        page_rows = vendors[start : start + ADMIN_CATALOG_PAGE_SIZE]
         await _edit_or_send_callback_message(
             query,
-            text=format_catalog_vendors(vendors),
+            text=_format_admin_catalog_vendors_page(page_rows, page, len(vendors)),
             parse_mode="HTML",
-            reply_markup=admin_catalog_vendors_keyboard(vendors),
+            reply_markup=admin_catalog_vendors_keyboard_paged(vendors, page),
         )
         return
 
@@ -3506,14 +3616,22 @@ async def admin_panel_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         )
         return
 
-    if data == "admin:catalog_view_items":
+    if data == "admin:catalog_view_items" or data.startswith("admin:catalog_view_items:"):
+        page = 0
+        if data.startswith("admin:catalog_view_items:"):
+            try:
+                page = max(0, int(data.rsplit(":", 1)[1]))
+            except ValueError:
+                page = 0
         items_with_vendors = db.list_menu_items_with_vendor()
-        text = format_catalog_items_list(items_with_vendors)
+        start = page * ADMIN_CATALOG_PAGE_SIZE
+        page_rows = items_with_vendors[start : start + ADMIN_CATALOG_PAGE_SIZE]
+        text = _format_admin_catalog_items_page(page_rows, page, len(items_with_vendors))
         await _edit_or_send_callback_message(
             query,
             text=text,
             parse_mode="HTML",
-            reply_markup=admin_catalog_items_keyboard(items_with_vendors),
+            reply_markup=admin_catalog_items_keyboard_paged(items_with_vendors, page),
         )
         return
 
