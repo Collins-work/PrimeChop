@@ -12,7 +12,7 @@ from typing import Dict, Optional
 
 import aiohttp
 from aiohttp import web
-from telegram import Bot, BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import Bot, BotCommand, BotCommandScopeChat, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.error import NetworkError, TelegramError
 from telegram.request import HTTPXRequest
 from telegram.warnings import PTBUserWarning
@@ -178,6 +178,14 @@ PRIME_SERVICE_RESPONSES = (
     (r"\b(terms|rules|policy)\b", "PrimeChop keeps ordering simple: menu availability matters, wallet top-ups must confirm successfully, and completed deliveries are not reversed automatically."),
 )
 
+WAITER_EMAIL_PLACEHOLDERS = {
+    "your.email@example.com",
+    "example@example.com",
+    "email@example.com",
+    "name@example.com",
+    "user@example.com",
+}
+
 PRIME_RIDDLES = [
     {
         "prompt": "I speak without a mouth and hear without ears. What am I?",
@@ -298,6 +306,113 @@ def _prime_match_service_response(text: str) -> str:
         if re.search(pattern, normalized):
             return response
     return f"I’m here for PrimeChop questions, friendly chat, and mini-games. Tell me what you need, or tap {BTN_PRIME_GAME}."
+
+
+def _parse_waiter_registration_details(details: str) -> tuple[dict | None, str | None]:
+    parsed: dict[str, str] = {}
+    for raw_line in (details or "").splitlines():
+        line = raw_line.strip()
+        if not line or ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        key = key.strip().lower()
+        value = value.strip()
+        if key in {"name", "email", "phone", "gender"}:
+            parsed[key] = value
+
+    name = parsed.get("name", "").strip()
+    email = parsed.get("email", "").strip().lower()
+    phone = parsed.get("phone", "").strip().replace(" ", "")
+    gender = parsed.get("gender", "").strip().lower()
+
+    if len(name) < 3:
+        return None, "Please enter your full name in the Name field."
+
+    if not re.fullmatch(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", email):
+        return None, "Please enter a valid email address."
+    if email in WAITER_EMAIL_PLACEHOLDERS or email.endswith("@example.com"):
+        return None, "Please use a real email address, not a placeholder email."
+
+    normalized_phone = phone
+    if re.fullmatch(r"0\d{10}", phone):
+        normalized_phone = phone
+    elif re.fullmatch(r"\+234\d{10}", phone):
+        normalized_phone = "0" + phone[4:]
+    else:
+        return None, "Please enter a valid Nigerian phone number like 08012345678 or +2348012345678."
+
+    if gender not in {"male", "female"}:
+        return None, "Gender must be Male or Female."
+
+    return (
+        {
+            "name": name,
+            "email": email,
+            "phone": normalized_phone,
+            "gender": gender.title(),
+        },
+        None,
+    )
+
+
+async def _set_public_bot_commands(application: Application, chat_id: int | None = None) -> None:
+    commands = [
+        BotCommand("start", "Show welcome message"),
+        BotCommand("prime", "Talk to Prime"),
+        BotCommand("place_order", "Browse menu and place an order"),
+        BotCommand("view_cart", "View your cart"),
+        BotCommand("become_waiter", "Apply to become a waiter"),
+        BotCommand("customer_support", "Contact support"),
+        BotCommand("order_history", "View recent orders"),
+        BotCommand("terms", "View terms and conditions"),
+        BotCommand("clear", "Clear recent chat messages"),
+        BotCommand("cancel", "Exit Prime chat mode"),
+        BotCommand("wallet", "Check wallet balance"),
+        BotCommand("topup", "Top up wallet balance"),
+        BotCommand("menu", "Open food menu"),
+        BotCommand("help", "Show help"),
+    ]
+    if chat_id is None:
+        await application.bot.set_my_commands(commands)
+    else:
+        await application.bot.set_my_commands(commands, scope=BotCommandScopeChat(chat_id=chat_id))
+
+
+async def _set_admin_bot_commands(application: Application, chat_id: int) -> None:
+    await application.bot.set_my_commands(
+        [
+            BotCommand("start", "Show welcome message"),
+            BotCommand("prime", "Talk to Prime"),
+            BotCommand("place_order", "Browse menu and place an order"),
+            BotCommand("view_cart", "View your cart"),
+            BotCommand("become_waiter", "Apply to become a waiter"),
+            BotCommand("customer_support", "Contact support"),
+            BotCommand("order_history", "View recent orders"),
+            BotCommand("terms", "View terms and conditions"),
+            BotCommand("clear", "Clear recent chat messages"),
+            BotCommand("cancel", "Exit Prime chat mode"),
+            BotCommand("wallet", "Check wallet balance"),
+            BotCommand("topup", "Top up wallet balance"),
+            BotCommand("menu", "Open food menu"),
+            BotCommand("help", "Show help"),
+            BotCommand("admin", "Open admin login"),
+            BotCommand("admin_secret", "Enter the super admin password"),
+            BotCommand("confirm_order", "Confirm an order payment by tx ref"),
+            BotCommand("view_orders", "Waiter order book (available and claimed)"),
+            BotCommand("waiters", "View the waiter database"),
+            BotCommand("order_progress", "Admin tracker for accepted/completed orders"),
+            BotCommand("order_analysis", "Admin order analytics"),
+            BotCommand("waiter_analysis", "Admin waiter analytics"),
+            BotCommand("clear_orders", "Admin: clear order history"),
+            BotCommand("additem", "Add a new menu item"),
+            BotCommand("confirm_topup", "Confirm a top-up payment"),
+            BotCommand("waiter_online", "Set waiter online"),
+            BotCommand("waiter_offline", "Set waiter offline"),
+            BotCommand("waiter_logout", "Exit waiter mode to customer menu"),
+            BotCommand("complete", "Mark a claimed order completed"),
+        ],
+        scope=BotCommandScopeChat(chat_id=chat_id),
+    )
 
 
 async def _prime_generate_ai_reply(text: str) -> str | None:
@@ -2701,7 +2816,12 @@ async def become_waiter(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• Competitive earnings\n"
         "• Campus-based deliveries\n"
         "• Performance bonuses\n\n"
-        "Choose an option below:"
+        "Choose an option below:\n\n"
+        "When registering, use this exact format:\n"
+        "Name: Your Full Name\n"
+        "Email: yourname@gmail.com\n"
+        "Phone: 08012345678\n"
+        "Gender: Male or Female"
     )
     await update.effective_message.reply_text(
         portal_text,
@@ -2748,15 +2868,33 @@ async def waiter_register_details_step(update: Update, context: ContextTypes.DEF
 
     user = update.effective_user
     details = (update.effective_message.text or "").strip()
-    if len(details) < 20:
-        await update.effective_message.reply_text("Please send complete registration details.")
+    parsed_details, error_message = _parse_waiter_registration_details(details)
+    if error_message:
+        await update.effective_message.reply_text(error_message)
         return
+
+    if not parsed_details:
+        await update.effective_message.reply_text(
+            "Please send your details in the required format:\n"
+            "Name: Your Full Name\n"
+            "Email: yourname@gmail.com\n"
+            "Phone: 08012345678\n"
+            "Gender: Male or Female"
+        )
+        return
+
+    cleaned_details = (
+        f"Name: {parsed_details['name']}\n"
+        f"Email: {parsed_details['email']}\n"
+        f"Phone: {parsed_details['phone']}\n"
+        f"Gender: {parsed_details['gender']}"
+    )
 
     waiter_request = db.create_or_update_waiter_request(
         user_id=user.id,
         public_user_id=generate_waiter_user_id(),
         full_name=user.full_name,
-        details=details,
+        details=cleaned_details,
     )
     request_id = waiter_request["id"]
     waiter_user_id = waiter_request["public_user_id"] or f"UID{request_id:03d}"
@@ -2775,7 +2913,9 @@ async def waiter_register_details_step(update: Update, context: ContextTypes.DEF
         f"<b>Request ID:</b> {request_id}\n"
         f"<b>Telegram ID:</b> {user.id}\n"
         f"<b>Name:</b> {user.full_name}\n"
-        f"<b>Details:</b> {details}"
+        f"<b>Email:</b> {parsed_details['email']}\n"
+        f"<b>Phone:</b> {parsed_details['phone']}\n"
+        f"<b>Gender:</b> {parsed_details['gender']}"
     )
     for admin_id in settings.admin_ids:
         try:
@@ -2855,6 +2995,7 @@ async def admin_secret(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     context.user_data["super_admin"] = True
+    await _set_admin_bot_commands(context.application, user.id)
     await update.effective_message.reply_text(
         f"🔐 Superior admin access granted.\n\n{format_admin_home()}",
         parse_mode="HTML",
@@ -2894,6 +3035,7 @@ async def admin_login_router(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     context.user_data.pop("admin_login_mode", None)
     context.user_data["super_admin"] = True
+    await _set_admin_bot_commands(context.application, user.id)
     await update.effective_message.reply_text(
         format_admin_home(),
         parse_mode="HTML",
@@ -3555,6 +3697,7 @@ async def admin_panel_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     if data == "admin:logout":
         context.user_data.pop("super_admin", None)
         context.user_data.pop("admin_invite_mode", None)
+        await _set_public_bot_commands(context.application, chat_id=user.id)
         await context.bot.send_message(chat_id=user.id, text="🔒 Superior admin session closed.")
         return
 
@@ -4340,8 +4483,8 @@ async def additem_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.effective_message.reply_text(text, parse_mode="HTML")
         return ConversationHandler.END
 
-    if update.effective_callback_query:
-        await update.effective_callback_query.answer()
+    if update.callback_query:
+        await update.callback_query.answer()
 
     runtime.add_item_draft[user.id] = {}
     text = format_admin_additem_start()
@@ -4530,31 +4673,7 @@ def main():
         await application.bot.set_my_short_description(
             "Daily meal radar with fast add-to-cart and urgent checkout."
         )
-        await application.bot.set_my_commands(
-            [
-                BotCommand("start", "Show welcome message"),
-                BotCommand("prime", "Talk to Prime"),
-                BotCommand("place_order", "Browse menu and place an order"),
-                BotCommand("view_cart", "View your cart"),
-                BotCommand("become_waiter", "Apply to become a waiter"),
-                BotCommand("customer_support", "Contact support"),
-                BotCommand("order_history", "View recent orders"),
-                BotCommand("terms", "View terms and conditions"),
-                BotCommand("clear", "Clear recent chat messages"),
-                BotCommand("cancel", "Exit Prime chat mode"),
-                BotCommand("wallet", "Check wallet balance"),
-                BotCommand("topup", "Top up wallet balance"),
-                BotCommand("menu", "Open food menu"),
-                BotCommand("confirm_order", "Confirm an order payment by tx ref"),
-                BotCommand("view_orders", "Waiter order book (available and claimed)"),
-                BotCommand("waiter_logout", "Exit waiter mode to customer menu"),
-                BotCommand("waiters", "View the waiter database"),
-                BotCommand("order_progress", "Admin tracker for accepted/completed orders"),
-                BotCommand("order_analysis", "Admin order analytics"),
-                BotCommand("waiter_analysis", "Admin waiter analytics"),
-                BotCommand("clear_orders", "Admin: clear order history"),
-            ]
-        )
+        await _set_public_bot_commands(application)
 
     request_timeout = 15 if settings.lightweight_mode else 30
     request = HTTPXRequest(

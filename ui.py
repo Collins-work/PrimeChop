@@ -865,7 +865,7 @@ def format_catalog_management_menu() -> str:
     )
 
 
-def format_catalog_items_list(items: list) -> str:
+def format_catalog_items_list(items: list, max_rows: int = 30) -> str:
     """Format list of menu items with IDs for admin management."""
     if not items:
         return f"{EMOJI_INFO} No menu items found.\n\nUse <b>Forge Menu Item</b> to create the first entry."
@@ -878,13 +878,18 @@ def format_catalog_items_list(items: list) -> str:
         except (KeyError, IndexError, TypeError):
             return default
 
-    lines = [f"{EMOJI_FOOD} <b>Menu Items</b>\n"]
-    for item in items:
+    total_items = len(items)
+    lines = [f"{EMOJI_FOOD} <b>Menu Items</b>", f"Showing {min(total_items, max_rows)} of {total_items} item(s).", ""]
+    for item in items[:max_rows]:
         vendor_name = _value(item, "vendor_name", "Unknown") or "Unknown"
         price = int(_value(item, "price", 0) or 0)
         active = "✅" if _value(item, "active", 1) else "❌"
         lines.append(f"{active} <b>#{item['id']}</b> - {item['name']}")
         lines.append(f"   {vendor_name} • ₦{price:,}\n")
+
+    if total_items > max_rows:
+        lines.append(f"...and {total_items - max_rows} more item(s).")
+        lines.append("Use the inline item buttons below to open any item directly.")
     
     return "\n".join(lines)
 
