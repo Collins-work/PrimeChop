@@ -1,6 +1,7 @@
 import sqlite3
 import csv
 import re
+import os
 from pathlib import Path
 from collections import defaultdict
 from contextlib import contextmanager
@@ -8,11 +9,70 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from typing import Iterable, Optional
 
+try:
+    import psycopg
+    from psycopg.rows import dict_row
+except Exception:  # pragma: no cover - optional at import time
+    psycopg = None
+    dict_row = None
+
+
+class _CompatCursor:
+    def __init__(self, inner_cursor):
+        self._inner = inner_cursor
+        self._lastrowid = None
+
+    @property
+    def rowcount(self):
+        return self._inner.rowcount
+
+    @property
+    def lastrowid(self):
+        return self._lastrowid
+
+    @lastrowid.setter
+    def lastrowid(self, value):
+        self._lastrowid = value
+
+    def fetchone(self):
+        return self._inner.fetchone()
+
+    def fetchall(self):
+        return self._inner.fetchall()
+
+
+class _CompatConnection:
+    def __init__(self, inner_connection, is_postgres: bool):
+        self._inner = inner_connection
+        self._is_postgres = is_postgres
+
+    def _convert_sql(self, sql: str) -> str:
+        if not self._is_postgres:
+            return sql
+        stripped = sql.strip().upper()
+        if stripped == "BEGIN IMMEDIATE":
+            return "BEGIN"
+        return sql.replace("?", "%s")
+
+    def execute(self, sql: str, params: tuple | list | None = None):
+        converted = self._convert_sql(sql)
+        values = tuple(params) if params is not None else tuple()
+        cursor = self._inner.execute(converted, values)
+        return _CompatCursor(cursor)
+
+    def commit(self):
+        self._inner.commit()
+
+    def close(self):
+        self._inner.close()
+
 
 class Database:
     def __init__(self, path: str, timezone_name: str):
         self.path = path
         self.tz = ZoneInfo(timezone_name)
+        self._is_postgres = str(path).strip().lower().startswith(("postgres://", "postgresql://"))
+        self._human_exports_enabled = (os.getenv("HUMAN_READABLE_EXPORTS_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"})
         db_path = Path(path).expanduser()
         base_dir = db_path.parent if db_path.parent and str(db_path.parent) not in {"", "."} else Path.cwd()
         self._human_data_dir = base_dir / "human_readable"
@@ -21,21 +81,50 @@ class Database:
 
     @contextmanager
     def connection(self):
-        db_path = Path(self.path).expanduser()
-        if db_path.parent and str(db_path.parent) not in {"", "."}:
-            db_path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(str(db_path))
-        conn.row_factory = sqlite3.Row
+        if self._is_postgres:
+            if psycopg is None:
+                raise RuntimeError("PostgreSQL driver is not installed. Add psycopg[binary] to requirements.")
+            raw_conn = psycopg.connect(self.path, row_factory=dict_row)
+            conn = _CompatConnection(raw_conn, is_postgres=True)
+        else:
+            db_path = Path(self.path).expanduser()
+            if db_path.parent and str(db_path.parent) not in {"", "."}:
+                db_path.parent.mkdir(parents=True, exist_ok=True)
+            raw_conn = sqlite3.connect(str(db_path))
+            raw_conn.row_factory = sqlite3.Row
+            conn = _CompatConnection(raw_conn, is_postgres=False)
         try:
             yield conn
             conn.commit()
         finally:
             conn.close()
 
+    def _postgres_required_tables_exist(self) -> bool:
+        required = {
+            "users",
+            "menu_items",
+            "orders",
+            "wallet_transactions",
+            "waiter_requests",
+            "vendors",
+        }
+        with self.connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT table_name
+                FROM information_schema.tables
+                WHERE table_schema = 'public'
+                """
+            ).fetchall()
+        existing = {str(row["table_name"]).strip() for row in rows}
+        return required.issubset(existing)
+
     def now_iso(self) -> str:
         return datetime.now(self.tz).isoformat()
 
     def _refresh_waiter_registry_export(self):
+        if not self._human_exports_enabled:
+            return
         with self.connection() as conn:
             waiter_users = conn.execute(
                 """
@@ -159,6 +248,8 @@ class Database:
                 )
 
     def _refresh_orders_users_export(self):
+        if not self._human_exports_enabled:
+            return
         with self.connection() as conn:
             rows = conn.execute(
                 """
@@ -257,6 +348,8 @@ class Database:
                 )
 
     def refresh_human_readable_exports(self):
+        if not self._human_exports_enabled:
+            return
         self._refresh_waiter_registry_export()
         self._refresh_orders_users_export()
 
@@ -430,6 +523,14 @@ class Database:
         )
 
     def init(self):
+        if self._is_postgres:
+            if not self._postgres_required_tables_exist():
+                raise RuntimeError(
+                    "PostgreSQL schema is missing required tables. Run schema_postgres.sql on your Railway database first."
+                )
+            self.refresh_human_readable_exports()
+            return
+
         with self.connection() as conn:
             conn.execute(
                 """
@@ -764,12 +865,14 @@ class Database:
                     user_id, public_user_id, full_name, details, status, reviewed_by, created_at, updated_at
                 )
                 VALUES (?, ?, ?, ?, 'pending', NULL, ?, ?)
+                RETURNING id
                 """,
                 (user_id, public_user_id, full_name, details, now, now),
             )
+            inserted_row = cursor.fetchone()
             created = conn.execute(
                 "SELECT * FROM waiter_requests WHERE id=?",
-                (int(cursor.lastrowid),),
+                (int(inserted_row["id"]),),
             ).fetchone()
             self._refresh_waiter_registry_export()
             return created
@@ -932,10 +1035,12 @@ class Database:
                 """
                 INSERT INTO menu_items (vendor_id, name, price, meal_slot, image_file_id, image_url, created_at, updated_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                RETURNING id
                 """,
                 (vendor_id, name, price, normalized_slot, image_file_id, image_url, now, now),
             )
-            return int(cursor.lastrowid)
+            inserted = cursor.fetchone()
+            return int(inserted["id"])
 
     def sync_vendor_menu(
         self,
@@ -1157,6 +1262,7 @@ class Database:
                     order_details, room_number, delivery_time, hall_name, status, payment_method, payment_provider, payment_tx_ref, payment_link, waiter_id,
                     service_fee_total, waiter_share, platform_share, accepted_at, completed_at, eta_minutes, eta_due_at, created_at, updated_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?)
+                RETURNING id
                 """,
                 (
                     order_ref,
@@ -1180,8 +1286,9 @@ class Database:
                     now,
                 ),
             )
+            inserted = cursor.fetchone()
         self._refresh_orders_users_export()
-        return int(cursor.lastrowid)
+        return int(inserted["id"])
 
     def get_order(self, order_id: int) -> Optional[sqlite3.Row]:
         with self.connection() as conn:
@@ -1670,6 +1777,7 @@ class Database:
                     order_details, room_number, delivery_time, hall_name, status, payment_method, payment_provider, payment_tx_ref, payment_link, waiter_id,
                     service_fee_total, waiter_share, platform_share, accepted_at, completed_at, eta_minutes, eta_due_at, created_at, updated_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending_waiter', 'wallet', 'wallet', ?, NULL, NULL, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?)
+                RETURNING id
                 """,
                 (
                     order_ref,
@@ -1689,6 +1797,7 @@ class Database:
                     now,
                 ),
             )
+            inserted = cursor.fetchone()
 
             conn.execute(
                 """
@@ -1699,4 +1808,4 @@ class Database:
                 (user_id, -amount, wallet_tx_ref, now, now),
             )
             self._refresh_orders_users_export()
-            return int(cursor.lastrowid)
+            return int(inserted["id"])

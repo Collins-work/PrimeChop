@@ -57,6 +57,20 @@ Delivery tracker:
 python app.py
 ```
 
+## PostgreSQL (Railway) Setup
+
+If you want to use Railway PostgreSQL, initialize it first with [schema_postgres.sql](schema_postgres.sql).
+
+Quick setup:
+1. In Railway, add a `PostgreSQL` service to your project.
+2. Open the Postgres service, copy the connection string.
+3. Connect with any SQL client (DBeaver, TablePlus, psql) and run [schema_postgres.sql](schema_postgres.sql).
+4. Keep your bot running on SQLite until Postgres query integration is completed in code.
+
+Important:
+- The current bot runtime uses `sqlite3` directly in [db.py](db.py).
+- `schema_postgres.sql` prepares your production Postgres database now, but app-level Postgres query switching still requires a dedicated code migration step.
+
 ### Webhook Mode (Render Web Service)
 
 To switch from polling to Telegram webhooks:
