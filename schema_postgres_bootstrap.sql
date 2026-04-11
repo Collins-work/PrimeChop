@@ -1,5 +1,5 @@
--- PrimeChop PostgreSQL schema
--- Paste this into Railway Postgres or run it through psql.
+-- PrimeChop PostgreSQL bootstrap schema (Railway-safe)
+-- Use this first if full schema fails in console.
 
 CREATE TABLE IF NOT EXISTS users (
     user_id BIGINT PRIMARY KEY,
@@ -14,6 +14,21 @@ CREATE TABLE IF NOT EXISTS users (
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_users_waiter_code ON users(waiter_code);
+
+CREATE TABLE IF NOT EXISTS waiter_requests (
+    id BIGSERIAL PRIMARY KEY,
+    user_id BIGINT NOT NULL,
+    public_user_id TEXT UNIQUE,
+    full_name TEXT NOT NULL,
+    details TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    reviewed_by BIGINT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_waiter_requests_status ON waiter_requests(status);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_waiter_requests_public_user_id ON waiter_requests(public_user_id);
 
 CREATE TABLE IF NOT EXISTS waiter_registry (
     id BIGSERIAL PRIMARY KEY,
@@ -139,124 +154,3 @@ CREATE TABLE IF NOT EXISTS wallet_transactions (
 
 CREATE INDEX IF NOT EXISTS idx_wallet_transactions_user_id ON wallet_transactions(user_id);
 CREATE INDEX IF NOT EXISTS idx_wallet_transactions_tx_ref ON wallet_transactions(tx_ref);
-
-CREATE TABLE IF NOT EXISTS waiter_requests (
-    id BIGSERIAL PRIMARY KEY,
-    user_id BIGINT NOT NULL,
-    public_user_id TEXT UNIQUE,
-    full_name TEXT NOT NULL,
-    details TEXT,
-    status TEXT NOT NULL DEFAULT 'pending',
-    reviewed_by BIGINT,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE INDEX IF NOT EXISTS idx_waiter_requests_status ON waiter_requests(status);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_waiter_requests_public_user_id ON waiter_requests(public_user_id);
-
-CREATE OR REPLACE FUNCTION touch_updated_at()
-RETURNS TRIGGER AS $$
-BEGIN
-    NEW.updated_at = NOW();
-    RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
-CREATE OR REPLACE FUNCTION sync_waiter_registry_delete()
-RETURNS TRIGGER AS $$
-BEGIN
-    INSERT INTO waiter_registry_events (
-        waiter_registry_id,
-        telegram_user_id,
-        event_type,
-        event_note,
-        snapshot,
-        created_at
-    ) VALUES (
-        OLD.id,
-        OLD.telegram_user_id,
-        'deleted',
-        COALESCE(OLD.deleted_reason, 'soft delete'),
-        to_jsonb(OLD),
-        NOW()
-    );
-    RETURN OLD;
-END;
-$$ LANGUAGE plpgsql;
-
-DROP TRIGGER IF EXISTS trg_users_touch_updated_at ON users;
-CREATE TRIGGER trg_users_touch_updated_at
-BEFORE UPDATE ON users
-FOR EACH ROW EXECUTE FUNCTION touch_updated_at();
-
-DROP TRIGGER IF EXISTS trg_waiter_registry_touch_updated_at ON waiter_registry;
-CREATE TRIGGER trg_waiter_registry_touch_updated_at
-BEFORE UPDATE ON waiter_registry
-FOR EACH ROW EXECUTE FUNCTION touch_updated_at();
-
-DROP TRIGGER IF EXISTS trg_vendors_touch_updated_at ON vendors;
-CREATE TRIGGER trg_vendors_touch_updated_at
-BEFORE UPDATE ON vendors
-FOR EACH ROW EXECUTE FUNCTION touch_updated_at();
-
-DROP TRIGGER IF EXISTS trg_menu_items_touch_updated_at ON menu_items;
-CREATE TRIGGER trg_menu_items_touch_updated_at
-BEFORE UPDATE ON menu_items
-FOR EACH ROW EXECUTE FUNCTION touch_updated_at();
-
-DROP TRIGGER IF EXISTS trg_orders_touch_updated_at ON orders;
-CREATE TRIGGER trg_orders_touch_updated_at
-BEFORE UPDATE ON orders
-FOR EACH ROW EXECUTE FUNCTION touch_updated_at();
-
-DROP TRIGGER IF EXISTS trg_wallet_transactions_touch_updated_at ON wallet_transactions;
-CREATE TRIGGER trg_wallet_transactions_touch_updated_at
-BEFORE UPDATE ON wallet_transactions
-FOR EACH ROW EXECUTE FUNCTION touch_updated_at();
-
-DROP TRIGGER IF EXISTS trg_waiter_requests_touch_updated_at ON waiter_requests;
-CREATE TRIGGER trg_waiter_requests_touch_updated_at
-BEFORE UPDATE ON waiter_requests
-FOR EACH ROW EXECUTE FUNCTION touch_updated_at();
-
-DROP TRIGGER IF EXISTS trg_waiter_registry_delete ON waiter_registry;
-CREATE TRIGGER trg_waiter_registry_delete
-AFTER UPDATE OF is_active, deleted_at ON waiter_registry
-FOR EACH ROW
-WHEN (OLD.is_active = 1 AND NEW.is_active = 0)
-EXECUTE FUNCTION sync_waiter_registry_delete();
-
-INSERT INTO waiter_registry (
-    telegram_user_id,
-    full_name,
-    email,
-    phone,
-    gender,
-    public_user_id,
-    waiter_code,
-    status,
-    is_active,
-    waiter_online,
-    waiter_verified,
-    registration_details,
-    deleted_at,
-    deleted_reason
-)
-SELECT
-    wr.user_id,
-    wr.full_name,
-    NULL,
-    NULL,
-    NULL,
-    wr.public_user_id,
-    NULL,
-    wr.status,
-    FALSE,
-    FALSE,
-    FALSE,
-    wr.details,
-    CASE WHEN wr.status = 'rejected' THEN NOW() ELSE NULL END,
-    CASE WHEN wr.status = 'rejected' THEN 'rejected request' ELSE NULL END
-FROM waiter_requests wr
-ON CONFLICT (telegram_user_id) DO NOTHING;
