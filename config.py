@@ -74,6 +74,26 @@ def _normalize_google_sheet_id(raw: str) -> str:
     return value
 
 
+def _resolve_db_path() -> str:
+    explicit_db_path = (os.getenv("DB_PATH", "") or "").strip()
+    database_url = (os.getenv("DATABASE_URL", "") or "").strip()
+    is_railway = bool(
+        os.getenv("RAILWAY_PROJECT_ID")
+        or os.getenv("RAILWAY_ENVIRONMENT_ID")
+        or os.getenv("RAILWAY_SERVICE_ID")
+        or os.getenv("RAILWAY_STATIC_URL")
+    )
+
+    # On Railway, prefer DATABASE_URL when available so bot uses managed Postgres automatically.
+    if is_railway and database_url:
+        return database_url
+    if explicit_db_path:
+        return explicit_db_path
+    if database_url:
+        return database_url
+    return "primechop.db"
+
+
 @dataclass(frozen=True)
 class Settings:
     telegram_bot_token: str
@@ -127,7 +147,7 @@ class Settings:
 
 settings = Settings(
     telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", "").strip(),
-    db_path=os.getenv("DB_PATH", "primechop.db").strip() or "primechop.db",
+    db_path=_resolve_db_path(),
     webhook_enabled=_parse_bool(
         os.getenv("WEBHOOK_ENABLED", ""),
         default=bool(os.getenv("RENDER") and os.getenv("WEBHOOK_BASE_URL")),
