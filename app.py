@@ -325,7 +325,7 @@ def _prime_match_service_response(text: str) -> str:
     for pattern, response in PRIME_SERVICE_RESPONSES:
         if re.search(pattern, normalized):
             return response
-    return f"I’m here for PrimeChop questions, friendly chat, and mini-games. Tell me what you need, or tap {BTN_PRIME_GAME}."
+    return "I can help with PrimeChop tasks and general questions. Share what you need and I will respond directly."
 
 
 def _prime_arithmetic_reply(text: str) -> str | None:
@@ -796,7 +796,7 @@ async def prime_chat_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if _prime_is_disclosure_request(text):
         await update.effective_message.reply_text(
-            "🌸 I can’t share internal bot creation or operating details, but I can help with PrimeChop questions, ordering, wallet use, support, and cute little games.",
+            "I can’t share internal bot creation or operating details, but I can help with PrimeChop questions, ordering, wallet use, and support.",
             parse_mode="HTML",
             reply_markup=prime_keyboard(),
         )
@@ -809,7 +809,7 @@ async def prime_chat_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if normalized in {"hi", "hello", "hey", "hii", "good morning", "good afternoon", "good evening"}:
         await update.effective_message.reply_text(
-            "🌷 Hi hi. I’m Prime, and I’m very happy you’re here. Ask me anything about PrimeChop, or send me a game request if you want a tiny break.",
+            "Hi. I am Prime. Ask me anything about PrimeChop or any general question.",
             parse_mode="HTML",
             reply_markup=prime_keyboard(),
         )
@@ -1011,11 +1011,15 @@ async def korapay_wallet_callback(request: web.Request) -> web.Response:
     )
 
     if settings.korapay_mode != "mock":
-        if not raw_body:
+        # KoraPay can hit this endpoint in two ways:
+        # 1) signed webhook event with request body
+        # 2) user redirect back with GET query parameters
+        if raw_body:
+            if not _is_korapay_signature_valid(raw_body, signature):
+                logger.warning("Rejected KoraPay callback due to invalid signature")
+                return web.Response(text="Invalid callback signature", status=401)
+        elif request.method.upper() != "GET":
             return web.Response(text="Invalid callback body", status=400)
-        if not _is_korapay_signature_valid(raw_body, signature):
-            logger.warning("Rejected KoraPay callback due to invalid signature")
-            return web.Response(text="Invalid callback signature", status=401)
 
     query = dict(request.query)
     reference = _extract_korapay_reference(payload if isinstance(payload, dict) else {}, query)
@@ -1916,7 +1920,8 @@ async def _finalize_order_checkout(update: Update, context: ContextTypes.DEFAULT
     item_name = draft["item_name"]
     hall_name = draft["hall_name"]
     room_number = draft["room_number"]
-    amount = int(draft["amount"]) + settings.service_fee_total
+    subtotal = int(draft["amount"])
+    amount = subtotal + settings.service_fee_total
     user_row = db.get_user(user.id)
     wallet_balance = int(user_row["wallet_balance"] or 0) if user_row else 0
 
@@ -1927,6 +1932,8 @@ async def _finalize_order_checkout(update: Update, context: ContextTypes.DEFAULT
         "hall_name": hall_name,
         "room_number": room_number,
         "amount": amount,
+        "subtotal": subtotal,
+        "service_fee": settings.service_fee_total,
         "item_id": int(draft["item_id"]),
         "order_details": draft.get("order_details", ""),
         "from_cart": bool(draft.get("from_cart", False)),
@@ -1941,6 +1948,8 @@ async def _finalize_order_checkout(update: Update, context: ContextTypes.DEFAULT
             room_number=room_number,
             amount=amount,
             wallet_balance=wallet_balance,
+            subtotal=subtotal,
+            service_fee=settings.service_fee_total,
         ),
         parse_mode="HTML",
         reply_markup=payment_method_keyboard(order_ref, wallet_balance, amount),
@@ -2099,6 +2108,8 @@ async def checkout_payment_callback(update: Update, context: ContextTypes.DEFAUL
             room_number=pending["room_number"],
             amount=amount,
             payment_provider=payments.provider_name(),
+            subtotal=int(pending.get("subtotal") or max(0, amount - settings.service_fee_total)),
+            service_fee=int(pending.get("service_fee") or settings.service_fee_total),
         )
         order_payment_markup = mock_payment_actions_keyboard(
             payment_url=payment_result.checkout_url,
@@ -2517,19 +2528,22 @@ def format_admin_order_tracker(rows: list) -> str:
 
         if row["status"] == "claimed":
             status = "In progress"
-            status_time = row["updated_at"] or "N/A"
-            time_label = "Accepted at"
+            accepted_at = row["accepted_at"] or row["updated_at"] or "N/A"
+            eta_minutes = int(row["eta_minutes"] or 0) if row["eta_minutes"] is not None else 0
+            eta_due = row["eta_due_at"] or "N/A"
+            time_block = f"Accepted at: {accepted_at}\nETA: {eta_minutes} min (due {eta_due})"
         else:
             status = "Completed"
-            status_time = row["updated_at"] or "N/A"
-            time_label = "Completed at"
+            accepted_at = row["accepted_at"] or row["created_at"] or "N/A"
+            completed_at = row["completed_at"] or row["updated_at"] or "N/A"
+            time_block = f"Accepted at: {accepted_at}\nCompleted at: {completed_at}"
 
         rating_label = f"{int(rating)}/5" if rating is not None else "Not rated"
         lines.append(
             f"#{order_ref} ({status}) - {item_name} - ₦{int(row['amount'] or 0):,}\n"
             f"Waiter: {waiter_name} [{waiter_code}]\n"
             f"Delivery: {hall_name} Room {room_number}\n"
-            f"{time_label}: {status_time}\n"
+            f"{time_block}\n"
             f"Customer Rating: {rating_label}"
         )
     return "\n\n".join(lines)
@@ -3484,6 +3498,15 @@ async def waiters_db(update: Update, context: ContextTypes.DEFAULT_TYPE):
         status = "Active" if row["role"] == "waiter" and row["waiter_online"] else "Inactive"
         verified = "verified" if row["waiter_verified"] else "unverified"
         lines.append(f"• {code} - {row['full_name']} (ID: {row['user_id']}) - {status}, {verified}")
+
+    lines.extend(
+        [
+            "",
+            "Human-readable exports:",
+            "• human_readable/waiter_registry.csv",
+            "• human_readable/orders_users_tracker.csv",
+        ]
+    )
 
     await update.effective_message.reply_text("\n".join(lines), parse_mode="HTML")
 
@@ -4569,7 +4592,7 @@ async def claim_order_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     db.upsert_user(waiter.id, waiter.full_name, role="waiter")
 
     order_id = int(query.data.split(":")[1])
-    claimed = db.claim_order(order_id, waiter.id)
+    claimed = db.claim_order(order_id, waiter.id, settings.default_delivery_eta_minutes)
 
     if not claimed:
         await query.answer("Order already claimed by another waiter.", show_alert=True)
@@ -4578,9 +4601,16 @@ async def claim_order_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     order = db.get_order(order_id)
     if order:
         _audit_order_event(order, event="order_claimed", payment_status="confirmed")
+        eta_minutes = int(order["eta_minutes"] or 0)
+        eta_due_text = ""
+        try:
+            if order["eta_due_at"]:
+                eta_due_text = datetime.fromisoformat(order["eta_due_at"]).strftime("%I:%M %p")
+        except Exception:
+            eta_due_text = ""
         await context.bot.send_message(
             chat_id=order["customer_id"],
-            text=format_order_claimed(order_id, waiter.full_name),
+            text=format_order_claimed(order_id, waiter.full_name, eta_minutes=eta_minutes, eta_due_at=eta_due_text),
             parse_mode="HTML",
         )
 

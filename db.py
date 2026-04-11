@@ -1,9 +1,10 @@
 import sqlite3
+import csv
 import re
 from pathlib import Path
 from collections import defaultdict
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from typing import Iterable, Optional
 
@@ -12,6 +13,11 @@ class Database:
     def __init__(self, path: str, timezone_name: str):
         self.path = path
         self.tz = ZoneInfo(timezone_name)
+        db_path = Path(path).expanduser()
+        base_dir = db_path.parent if db_path.parent and str(db_path.parent) not in {"", "."} else Path.cwd()
+        self._human_data_dir = base_dir / "human_readable"
+        self._waiter_registry_export_path = self._human_data_dir / "waiter_registry.csv"
+        self._orders_users_export_path = self._human_data_dir / "orders_users_tracker.csv"
 
     @contextmanager
     def connection(self):
@@ -28,6 +34,174 @@ class Database:
 
     def now_iso(self) -> str:
         return datetime.now(self.tz).isoformat()
+
+    def _refresh_waiter_registry_export(self):
+        with self.connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    u.user_id,
+                    u.full_name,
+                    u.role,
+                    u.waiter_online,
+                    u.waiter_code,
+                    u.waiter_verified,
+                    u.created_at,
+                    u.updated_at,
+                    wr.public_user_id,
+                    wr.details AS registration_details,
+                    wr.status AS request_status
+                FROM users u
+                LEFT JOIN waiter_requests wr
+                  ON wr.user_id = u.user_id
+                 AND wr.id = (
+                     SELECT id
+                     FROM waiter_requests wr2
+                     WHERE wr2.user_id = u.user_id
+                     ORDER BY wr2.id DESC
+                     LIMIT 1
+                 )
+                WHERE u.role='waiter' OR u.waiter_verified=1
+                ORDER BY COALESCE(u.waiter_code, ''), u.user_id ASC
+                """
+            ).fetchall()
+
+        self._human_data_dir.mkdir(parents=True, exist_ok=True)
+        with self._waiter_registry_export_path.open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(
+                [
+                    "user_id",
+                    "full_name",
+                    "role",
+                    "waiter_online",
+                    "waiter_code",
+                    "waiter_verified",
+                    "public_waiter_id",
+                    "request_status",
+                    "registration_details",
+                    "created_at",
+                    "updated_at",
+                ]
+            )
+            for row in rows:
+                writer.writerow(
+                    [
+                        int(row["user_id"] or 0),
+                        row["full_name"] or "",
+                        row["role"] or "",
+                        int(row["waiter_online"] or 0),
+                        row["waiter_code"] or "",
+                        int(row["waiter_verified"] or 0),
+                        row["public_user_id"] or "",
+                        row["request_status"] or "",
+                        row["registration_details"] or "",
+                        row["created_at"] or "",
+                        row["updated_at"] or "",
+                    ]
+                )
+
+    def _refresh_orders_users_export(self):
+        with self.connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    o.id,
+                    o.order_ref,
+                    o.order_details,
+                    o.amount,
+                    o.service_fee_total,
+                    o.waiter_share,
+                    o.platform_share,
+                    o.status,
+                    o.hall_name,
+                    o.room_number,
+                    o.payment_method,
+                    o.payment_provider,
+                    o.payment_tx_ref,
+                    o.created_at,
+                    o.accepted_at,
+                    o.completed_at,
+                    o.eta_minutes,
+                    o.eta_due_at,
+                    c.user_id AS customer_id,
+                    c.full_name AS customer_name,
+                    w.user_id AS waiter_id,
+                    w.full_name AS waiter_name,
+                    w.waiter_code AS waiter_code,
+                    m.name AS item_name
+                FROM orders o
+                LEFT JOIN users c ON c.user_id = o.customer_id
+                LEFT JOIN users w ON w.user_id = o.waiter_id
+                LEFT JOIN menu_items m ON m.id = o.item_id
+                ORDER BY o.id DESC
+                """
+            ).fetchall()
+
+        self._human_data_dir.mkdir(parents=True, exist_ok=True)
+        with self._orders_users_export_path.open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(
+                [
+                    "order_id",
+                    "order_ref",
+                    "item_name",
+                    "order_details",
+                    "amount",
+                    "service_fee_total",
+                    "waiter_share",
+                    "platform_share",
+                    "status",
+                    "customer_id",
+                    "customer_name",
+                    "waiter_id",
+                    "waiter_name",
+                    "waiter_code",
+                    "hall_name",
+                    "room_number",
+                    "payment_method",
+                    "payment_provider",
+                    "payment_tx_ref",
+                    "created_at",
+                    "accepted_at",
+                    "completed_at",
+                    "eta_minutes",
+                    "eta_due_at",
+                ]
+            )
+            for row in rows:
+                writer.writerow(
+                    [
+                        int(row["id"] or 0),
+                        row["order_ref"] or "",
+                        row["item_name"] or "",
+                        row["order_details"] or "",
+                        int(row["amount"] or 0),
+                        int(row["service_fee_total"] or 0),
+                        int(row["waiter_share"] or 0),
+                        int(row["platform_share"] or 0),
+                        row["status"] or "",
+                        int(row["customer_id"] or 0),
+                        row["customer_name"] or "",
+                        int(row["waiter_id"] or 0) if row["waiter_id"] is not None else "",
+                        row["waiter_name"] or "",
+                        row["waiter_code"] or "",
+                        row["hall_name"] or "",
+                        row["room_number"] or "",
+                        row["payment_method"] or "",
+                        row["payment_provider"] or "",
+                        row["payment_tx_ref"] or "",
+                        row["created_at"] or "",
+                        row["accepted_at"] or "",
+                        row["completed_at"] or "",
+                        int(row["eta_minutes"] or 0) if row["eta_minutes"] is not None else "",
+                        row["eta_due_at"] or "",
+                    ]
+                )
+
+    def refresh_human_readable_exports(self):
+        self._refresh_waiter_registry_export()
+        self._refresh_orders_users_export()
 
     def _normalize_vendor_name(self, name: str) -> str:
         text = (name or "").strip()
@@ -143,6 +317,14 @@ class Database:
             conn.execute("ALTER TABLE orders ADD COLUMN customer_feedback TEXT")
         if "rating_submitted_at" not in columns:
             conn.execute("ALTER TABLE orders ADD COLUMN rating_submitted_at TEXT")
+        if "accepted_at" not in columns:
+            conn.execute("ALTER TABLE orders ADD COLUMN accepted_at TEXT")
+        if "completed_at" not in columns:
+            conn.execute("ALTER TABLE orders ADD COLUMN completed_at TEXT")
+        if "eta_minutes" not in columns:
+            conn.execute("ALTER TABLE orders ADD COLUMN eta_minutes INTEGER")
+        if "eta_due_at" not in columns:
+            conn.execute("ALTER TABLE orders ADD COLUMN eta_due_at TEXT")
         conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_order_ref ON orders(order_ref)")
         conn.execute("UPDATE orders SET payment_method='transfer' WHERE payment_method IS NULL OR payment_method=''")
         conn.execute("UPDATE orders SET payment_provider='korapay' WHERE payment_provider IS NULL OR payment_provider=''")
@@ -245,6 +427,10 @@ class Database:
                     customer_rating INTEGER,
                     customer_feedback TEXT,
                     rating_submitted_at TEXT,
+                    accepted_at TEXT,
+                    completed_at TEXT,
+                    eta_minutes INTEGER,
+                    eta_due_at TEXT,
                     waiter_id INTEGER,
                     service_fee_total INTEGER NOT NULL,
                     waiter_share INTEGER NOT NULL,
@@ -297,6 +483,7 @@ class Database:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_waiter_requests_status ON waiter_requests(status)"
             )
+        self.refresh_human_readable_exports()
 
     def seed_vendors(self, vendor_names: Iterable[str]):
         now = self.now_iso()
@@ -384,6 +571,7 @@ class Database:
                 """,
                 (user_id, full_name, role, now, now),
             )
+            self._refresh_waiter_registry_export()
 
     def set_role(self, user_id: int, role: str):
         now = self.now_iso()
@@ -392,6 +580,7 @@ class Database:
                 "UPDATE users SET role=?, updated_at=? WHERE user_id=?",
                 (role, now, user_id),
             )
+        self._refresh_waiter_registry_export()
 
     def set_waiter_online(self, user_id: int, online: bool):
         now = self.now_iso()
@@ -400,6 +589,7 @@ class Database:
                 "UPDATE users SET waiter_online=?, updated_at=? WHERE user_id=?",
                 (1 if online else 0, now, user_id),
             )
+        self._refresh_waiter_registry_export()
 
     def assign_waiter_invite(self, user_id: int, full_name: str, waiter_code: str):
         now = self.now_iso()
@@ -417,6 +607,7 @@ class Database:
                 """,
                 (user_id, full_name, waiter_code, now, now),
             )
+            self._refresh_waiter_registry_export()
 
     def list_waiters(self, limit: int = 50) -> list[sqlite3.Row]:
         with self.connection() as conn:
@@ -448,7 +639,8 @@ class Database:
                 return None
 
             conn.execute("DELETE FROM users WHERE user_id=?", (row["user_id"],))
-            return row
+        self._refresh_waiter_registry_export()
+        return row
 
     def waiter_performance(self, limit: int = 20) -> list[sqlite3.Row]:
         with self.connection() as conn:
@@ -502,10 +694,12 @@ class Database:
                     """,
                     (full_name, details, resolved_public_id, now, existing["id"]),
                 )
-                return conn.execute(
+                updated = conn.execute(
                     "SELECT * FROM waiter_requests WHERE id=?",
                     (existing["id"],),
                 ).fetchone()
+                self._refresh_waiter_registry_export()
+                return updated
 
             cursor = conn.execute(
                 """
@@ -516,10 +710,12 @@ class Database:
                 """,
                 (user_id, public_user_id, full_name, details, now, now),
             )
-            return conn.execute(
+            created = conn.execute(
                 "SELECT * FROM waiter_requests WHERE id=?",
                 (int(cursor.lastrowid),),
             ).fetchone()
+            self._refresh_waiter_registry_export()
+            return created
 
     def list_pending_waiter_requests(self, limit: int = 20) -> list[sqlite3.Row]:
         with self.connection() as conn:
@@ -579,10 +775,12 @@ class Database:
                 (waiter_code, now, request["user_id"]),
             )
 
-            return conn.execute(
+            updated = conn.execute(
                 "SELECT * FROM waiter_requests WHERE id=?",
                 (request_id,),
             ).fetchone()
+        self._refresh_waiter_registry_export()
+        return updated
 
     def reject_waiter_request(self, request_id: int, admin_user_id: int) -> Optional[sqlite3.Row]:
         now = self.now_iso()
@@ -602,10 +800,12 @@ class Database:
                 """,
                 (admin_user_id, now, request_id),
             )
-            return conn.execute(
+            updated = conn.execute(
                 "SELECT * FROM waiter_requests WHERE id=?",
                 (request_id,),
             ).fetchone()
+        self._refresh_waiter_registry_export()
+        return updated
 
     def get_online_waiters(self, allowed_waiter_ids: set[int]) -> Iterable[sqlite3.Row]:
         with self.connection() as conn:
@@ -656,7 +856,8 @@ class Database:
                 """,
                 (now, user_id),
             )
-            return True
+        self._refresh_waiter_registry_export()
+        return True
 
     def add_menu_item(
         self,
@@ -897,8 +1098,8 @@ class Database:
                 INSERT INTO orders (
                     order_ref, customer_id, item_id, cafeteria_name, amount,
                     order_details, room_number, delivery_time, hall_name, status, payment_method, payment_provider, payment_tx_ref, payment_link, waiter_id,
-                    service_fee_total, waiter_share, platform_share, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)
+                    service_fee_total, waiter_share, platform_share, accepted_at, completed_at, eta_minutes, eta_due_at, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?)
                 """,
                 (
                     order_ref,
@@ -922,7 +1123,8 @@ class Database:
                     now,
                 ),
             )
-            return int(cursor.lastrowid)
+        self._refresh_orders_users_export()
+        return int(cursor.lastrowid)
 
     def get_order(self, order_id: int) -> Optional[sqlite3.Row]:
         with self.connection() as conn:
@@ -1212,7 +1414,8 @@ class Database:
             row = conn.execute("SELECT COUNT(*) AS total FROM orders").fetchone()
             deleted_count = int(row["total"] or 0)
             conn.execute("DELETE FROM orders")
-            return deleted_count
+        self._refresh_orders_users_export()
+        return deleted_count
 
     def mark_order_payment_success(self, tx_ref: str) -> Optional[sqlite3.Row]:
         now = self.now_iso()
@@ -1232,20 +1435,27 @@ class Database:
                 """,
                 (now, order["id"]),
             )
-            return conn.execute("SELECT * FROM orders WHERE id=?", (order["id"],)).fetchone()
+            updated = conn.execute("SELECT * FROM orders WHERE id=?", (order["id"],)).fetchone()
+        self._refresh_orders_users_export()
+        return updated
 
-    def claim_order(self, order_id: int, waiter_id: int) -> bool:
+    def claim_order(self, order_id: int, waiter_id: int, eta_minutes: int | None = None) -> bool:
         now = self.now_iso()
+        eta = max(5, int(eta_minutes or 20))
+        eta_due = (datetime.now(self.tz) + timedelta(minutes=eta)).isoformat()
         with self.connection() as conn:
             cursor = conn.execute(
                 """
                 UPDATE orders
-                SET waiter_id=?, status='claimed', updated_at=?
+                SET waiter_id=?, status='claimed', accepted_at=COALESCE(accepted_at, ?), eta_minutes=?, eta_due_at=?, updated_at=?
                 WHERE id=? AND waiter_id IS NULL AND status='pending_waiter'
                 """,
-                (waiter_id, now, order_id),
+                (waiter_id, now, eta, eta_due, now, order_id),
             )
-            return cursor.rowcount == 1
+        if cursor.rowcount == 1:
+            self._refresh_orders_users_export()
+            return True
+        return False
 
     def complete_order(self, order_id: int, waiter_id: int) -> bool:
         now = self.now_iso()
@@ -1253,12 +1463,15 @@ class Database:
             cursor = conn.execute(
                 """
                 UPDATE orders
-                SET status='completed', updated_at=?
+                SET status='completed', completed_at=COALESCE(completed_at, ?), updated_at=?
                 WHERE id=? AND waiter_id=? AND status='claimed'
                 """,
-                (now, order_id, waiter_id),
+                (now, now, order_id, waiter_id),
             )
-            return cursor.rowcount == 1
+        if cursor.rowcount == 1:
+            self._refresh_orders_users_export()
+            return True
+        return False
 
     def submit_order_rating(self, order_id: int, customer_id: int, rating: int) -> bool:
         now = self.now_iso()
@@ -1290,6 +1503,10 @@ class Database:
                     o.customer_rating,
                     o.created_at,
                     o.updated_at,
+                    o.accepted_at,
+                    o.completed_at,
+                    o.eta_minutes,
+                    o.eta_due_at,
                     m.name AS item_name,
                     c.full_name AS customer_name,
                     w.full_name AS waiter_name,
@@ -1342,7 +1559,8 @@ class Database:
                 "UPDATE users SET wallet_balance=wallet_balance+?, updated_at=? WHERE user_id=?",
                 (tx["amount"], now, tx["user_id"]),
             )
-            return tx
+        self._refresh_waiter_registry_export()
+        return tx
 
     def list_wallet_transactions(self, user_id: int, limit: int = 10) -> list[sqlite3.Row]:
         with self.connection() as conn:
@@ -1393,8 +1611,8 @@ class Database:
                 INSERT INTO orders (
                     order_ref, customer_id, item_id, cafeteria_name, amount,
                     order_details, room_number, delivery_time, hall_name, status, payment_method, payment_provider, payment_tx_ref, payment_link, waiter_id,
-                    service_fee_total, waiter_share, platform_share, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending_waiter', 'wallet', 'wallet', ?, NULL, NULL, ?, ?, ?, ?, ?)
+                    service_fee_total, waiter_share, platform_share, accepted_at, completed_at, eta_minutes, eta_due_at, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending_waiter', 'wallet', 'wallet', ?, NULL, NULL, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?)
                 """,
                 (
                     order_ref,
@@ -1423,4 +1641,5 @@ class Database:
                 """,
                 (user_id, -amount, wallet_tx_ref, now, now),
             )
+            self._refresh_orders_users_export()
             return int(cursor.lastrowid)

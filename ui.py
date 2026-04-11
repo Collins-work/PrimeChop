@@ -262,7 +262,7 @@ def format_start_message(
     recommendations,
     user_name: str = "",
 ) -> str:
-    """Format the personalized welcome and meal recommendation message."""
+    """Format a compact personalized welcome and meal recommendation message."""
     first_name = user_name.split()[0] if user_name else "there"
     lines = [
         f"👋 <b>Welcome, {first_name}</b>",
@@ -273,16 +273,16 @@ def format_start_message(
 
     if recommendations:
         for index, recommendation in enumerate(recommendations[:3], start=1):
-            lines.append(f"{index}. <b>{recommendation['name']}</b>")
-            lines.append(f"   {recommendation['vendor_name']} • ₦{recommendation['price']:,}")
-            lines.append(f"   Why: {recommendation['reason']}")
+            lines.append(
+                f"{index}. <b>{recommendation['name']}</b> - {recommendation['vendor_name']} - ₦{recommendation['price']:,}"
+            )
     else:
         lines.append("No personal picks yet. Place an order to train your recommendations.")
 
     lines.extend(
         [
             "",
-            "Tap a quick action below to add a meal or start checkout.",
+            "Tap a quick action below to add a meal or checkout.",
         ]
     )
     return "\n".join(lines)
@@ -481,16 +481,21 @@ def format_order_payment_ready(
     room_number: str,
     amount: int,
     payment_provider: str,
+    subtotal: int = 0,
+    service_fee: int = 0,
 ) -> str:
     """Format the checkout message shown before payment is completed."""
     provider_label = payment_provider.title() if payment_provider else "Payment"
+    base_amount = subtotal if subtotal > 0 else max(0, amount - max(0, service_fee))
     return (
         f"✅ <b>Order Ready - Payment Needed</b>\n\n"
         f"📦 <b>Order ID:</b> #{order_ref}\n"
         f"🏪 <b>Vendor:</b> {vendor_name}\n"
         f"🍽️ <b>Item:</b> {item_name}\n"
         f"🏫 <b>Delivery:</b> {hall_name} - Room {room_number}\n"
-        f"💰 <b>Amount:</b> ₦{amount:,}\n"
+        f"🧾 <b>Subtotal:</b> ₦{base_amount:,}\n"
+        f"🛠️ <b>Service Fee:</b> ₦{max(0, service_fee):,}\n"
+        f"💰 <b>Total:</b> ₦{amount:,}\n"
         f"💳 <b>Payment Method:</b> {provider_label}\n\n"
         "Tap below to complete payment and submit your order."
     )
@@ -638,13 +643,17 @@ def format_waiter_order_alert(
     )
 
 
-def format_order_claimed(order_id: int, waiter_name: str) -> str:
+def format_order_claimed(order_id: int, waiter_name: str, eta_minutes: int = 0, eta_due_at: str = "") -> str:
     """Format order claimed message for customer."""
+    eta_line = f"⏱️ <b>ETA:</b> about {eta_minutes} min\n" if eta_minutes > 0 else ""
+    eta_due_line = f"🕒 <b>Estimated arrival:</b> {eta_due_at}\n" if eta_due_at else ""
     return (
         f"{EMOJI_SUCCESS} <b>Order #{order_id} Claimed!</b>\n\n"
         f"{EMOJI_WAITER} <b>Waiter:</b> {waiter_name}\n"
+        f"{eta_line}"
+        f"{eta_due_line}"
         f"{EMOJI_DELIVERY} <b>Status:</b> On the way\n\n"
-        f"Your delivery is on the way."
+        "Delivery tracker is live. You will get another update when it is completed."
     )
 
 
@@ -745,16 +754,21 @@ def format_checkout_payment_choice(
     room_number: str,
     amount: int,
     wallet_balance: int,
+    subtotal: int = 0,
+    service_fee: int = 0,
 ) -> str:
     """Format payment choice prompt after order details are captured."""
     sufficiency = "enough" if wallet_balance >= amount else "not enough"
+    base_amount = subtotal if subtotal > 0 else max(0, amount - max(0, service_fee))
     return (
         "💸 <b>Choose Payment Method</b>\n\n"
         f"📦 <b>Order ID:</b> #{order_ref}\n"
         f"🏪 <b>Vendor:</b> {vendor_name}\n"
         f"🍽️ <b>Item:</b> {item_name}\n"
         f"🏫 <b>Delivery:</b> {hall_name} - Room {room_number}\n"
-        f"💰 <b>Amount:</b> ₦{amount:,}\n"
+        f"🧾 <b>Subtotal:</b> ₦{base_amount:,}\n"
+        f"🛠️ <b>Service Fee:</b> ₦{max(0, service_fee):,}\n"
+        f"💰 <b>Total:</b> ₦{amount:,}\n"
         f"👛 <b>Wallet:</b> ₦{wallet_balance:,} ({sufficiency})\n\n"
         "Choose wallet or card checkout below."
     )

@@ -62,6 +62,18 @@ def _parse_bool(raw: str, default: bool = False) -> bool:
     return value in {"1", "true", "yes", "on"}
 
 
+def _normalize_google_sheet_id(raw: str) -> str:
+    value = (raw or "").strip()
+    if not value:
+        return ""
+    if "/d/" in value:
+        try:
+            return value.split("/d/", 1)[1].split("/", 1)[0].strip()
+        except Exception:
+            return value
+    return value
+
+
 @dataclass(frozen=True)
 class Settings:
     telegram_bot_token: str
@@ -110,6 +122,7 @@ class Settings:
     prime_ai_chat_url: str
     prime_ai_model: str
     prime_ai_timeout_seconds: float
+    default_delivery_eta_minutes: int
 
 
 settings = Settings(
@@ -165,7 +178,7 @@ settings = Settings(
     excel_audit_backend=os.getenv("EXCEL_AUDIT_BACKEND", "sqlite").strip().lower(),
     excel_audit_file=os.getenv("EXCEL_AUDIT_FILE", "primechop_audit.xlsx").strip(),
     excel_audit_sqlite_db=os.getenv("EXCEL_AUDIT_SQLITE_DB", "primechop.db").strip(),
-    google_sheets_spreadsheet_id=os.getenv("GOOGLE_SHEETS_SPREADSHEET_ID", "").strip(),
+    google_sheets_spreadsheet_id=_normalize_google_sheet_id(os.getenv("GOOGLE_SHEETS_SPREADSHEET_ID", "")),
     google_sheets_credentials_file=os.getenv("GOOGLE_SHEETS_CREDENTIALS_FILE", "").strip(),
     google_sheets_order_sheet=os.getenv("GOOGLE_SHEETS_ORDER_SHEET", "OrdersAudit").strip(),
     google_sheets_waiter_sheet=os.getenv("GOOGLE_SHEETS_WAITER_SHEET", "WaiterRegistry").strip(),
@@ -184,6 +197,7 @@ settings = Settings(
     prime_ai_chat_url=os.getenv("PRIME_AI_CHAT_URL", "https://openrouter.ai/api/v1/chat/completions").strip(),
     prime_ai_model=os.getenv("PRIME_AI_MODEL", "openai/gpt-4o-mini").strip(),
     prime_ai_timeout_seconds=max(5.0, float(os.getenv("PRIME_AI_TIMEOUT_SECONDS", "20"))),
+    default_delivery_eta_minutes=max(8, int(os.getenv("DEFAULT_DELIVERY_ETA_MINUTES", "25"))),
 )
 
 if not settings.telegram_bot_token:

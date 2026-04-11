@@ -48,6 +48,9 @@ Service fee:
 - `SERVICE_FEE_SPLIT_MODE=waiter300` for waiter 300 / platform 200
 - `START_LOGO=assets/primechop-logo.png` (or an https URL)
 
+Delivery tracker:
+- `DEFAULT_DELIVERY_ETA_MINUTES=25` (used when a waiter accepts an order)
+
 ## 3) Run
 
 ```powershell
@@ -163,6 +166,16 @@ Prime AI behavior notes:
 - Prime now uses a stronger system prompt and short chat memory so responses feel more like a normal general AI assistant (less rigid keyword replies).
 - Prime includes approved PrimeChop background context (origin story and mission) for history-style user questions.
 - If the AI endpoint fails, Prime falls back to local/service replies so users still get help.
+
+Human-readable live data exports:
+- `human_readable/waiter_registry.csv`
+  - Waiter roster, waiter code, verification state, online/offline state, and latest registration details.
+- `human_readable/orders_users_tracker.csv`
+  - Order id/ref, order details, customer + waiter, accepted timestamp, completed timestamp, ETA minutes, ETA due time, and payment references.
+
+How to open these files:
+- They open directly in Excel/Google Sheets.
+- In VS Code, install an extension like **Rainbow CSV** for easier filtering/sorting inside the editor.
 
 How to "train" or customize Prime AI:
 1. Prompt tuning (fastest): edit the system prompt in [app.py](app.py) to add behavior rules, tone, and trusted facts.
