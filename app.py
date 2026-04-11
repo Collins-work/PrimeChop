@@ -5024,6 +5024,17 @@ def main_with_retry():
 def main():
     logger.info("🚀 Starting PrimeChop bot...")
     logger.info(f"Configuration: WEBHOOK_ENABLED={settings.webhook_enabled}, LIGHTWEIGHT_MODE={settings.lightweight_mode}, KORAPAY_MODE={settings.korapay_mode}")
+    db_target = settings.db_path
+    if db_target.lower().startswith(("postgres://", "postgresql://")):
+        db_label = "postgresql"
+        try:
+            from urllib.parse import urlsplit
+            db_host = urlsplit(db_target).hostname or "unknown-host"
+            logger.info("Database backend: %s (host=%s)", db_label, db_host)
+        except Exception:
+            logger.info("Database backend: %s", db_label)
+    else:
+        logger.info("Database backend: sqlite (path=%s)", db_target)
     
     logger.info("Initializing database...")
     db.init()

@@ -13,9 +13,11 @@ from typing import Iterable, Optional
 try:
     import psycopg
     from psycopg.rows import dict_row
+    from psycopg import OperationalError as PsycopgOperationalError
 except Exception:  # pragma: no cover - optional at import time
     psycopg = None
     dict_row = None
+    PsycopgOperationalError = Exception
 
 
 class _CompatCursor:
@@ -98,12 +100,69 @@ class Database:
         except Exception:
             return raw
 
+    def _postgres_dsn_with_sslmode(self, dsn: str, sslmode: str) -> str:
+        try:
+            parts = urlsplit(dsn)
+            query = dict(parse_qsl(parts.query, keep_blank_values=True))
+            query["sslmode"] = sslmode
+            if "connect_timeout" not in query:
+                query["connect_timeout"] = "10"
+            new_query = urlencode(query)
+            return urlunsplit((parts.scheme, parts.netloc, parts.path, new_query, parts.fragment))
+        except Exception:
+            return dsn
+
+    def _postgres_connection_attempts(self) -> list[str]:
+        base = self._postgres_dsn or self.path
+        attempts: list[str] = []
+        seen: set[str] = set()
+
+        candidates = [
+            base,
+            self._postgres_dsn_with_sslmode(base, "require"),
+            self._postgres_dsn_with_sslmode(base, "prefer"),
+            self._postgres_dsn_with_sslmode(base, "disable"),
+        ]
+
+        for candidate in candidates:
+            if candidate and candidate not in seen:
+                seen.add(candidate)
+                attempts.append(candidate)
+
+        database_url = (os.getenv("DATABASE_URL") or "").strip()
+        if database_url:
+            normalized = self._prepare_postgres_dsn(database_url)
+            for candidate in (
+                normalized,
+                self._postgres_dsn_with_sslmode(normalized, "require"),
+                self._postgres_dsn_with_sslmode(normalized, "prefer"),
+            ):
+                if candidate and candidate not in seen:
+                    seen.add(candidate)
+                    attempts.append(candidate)
+
+        return attempts
+
     @contextmanager
     def connection(self):
         if self._is_postgres:
             if psycopg is None:
                 raise RuntimeError("PostgreSQL driver is not installed. Add psycopg[binary] to requirements.")
-            raw_conn = psycopg.connect(self._postgres_dsn, row_factory=dict_row)
+            last_error = None
+            raw_conn = None
+            for attempt_dsn in self._postgres_connection_attempts():
+                try:
+                    raw_conn = psycopg.connect(attempt_dsn, row_factory=dict_row)
+                    break
+                except PsycopgOperationalError as exc:
+                    last_error = exc
+                    continue
+            if raw_conn is None:
+                raise RuntimeError(
+                    "Unable to connect to PostgreSQL after multiple SSL attempts. "
+                    "Verify Railway DB URL/credentials and networking. "
+                    f"Last error: {last_error}"
+                )
             conn = _CompatConnection(raw_conn, is_postgres=True)
         else:
             db_path = Path(self.path).expanduser()
