@@ -43,6 +43,12 @@ def _parse_ids(raw: str) -> Set[int]:
     return {int(part.strip()) for part in raw.split(",") if part.strip()}
 
 
+def _parse_set(raw: str) -> Set[str]:
+    if not raw.strip():
+        return set()
+    return {part.strip() for part in raw.split(",") if part.strip()}
+
+
 def _parse_csv_list(raw: str) -> list[str]:
     if not raw.strip():
         return []
@@ -65,6 +71,7 @@ class Settings:
     webhook_listen_host: str
     webhook_port: int
     admin_ids: Set[int]
+    admin_phone_numbers: Set[str]
     waiter_ids: Set[int]
     bot_timezone: str
     cafeteria_name: str
@@ -115,6 +122,7 @@ settings = Settings(
     webhook_listen_host=os.getenv("WEBHOOK_LISTEN_HOST", "0.0.0.0").strip(),
     webhook_port=int(os.getenv("WEBHOOK_PORT", os.getenv("PORT", "8080"))),
     admin_ids=_parse_ids(os.getenv("ADMIN_IDS", "")),
+    admin_phone_numbers=_parse_set(os.getenv("ADMIN_PHONE_NUMBERS", "")),
     waiter_ids=_parse_ids(os.getenv("WAITER_IDS", "")),
     bot_timezone=os.getenv("BOT_TIMEZONE", "Africa/Lagos").strip(),
     cafeteria_name=os.getenv("CAFETERIA_NAME", "Cafeteria 1").strip(),

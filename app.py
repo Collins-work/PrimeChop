@@ -3220,10 +3220,6 @@ async def admin_secret(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    if not is_admin(user.id):
-        await update.effective_message.reply_text("❌ Sorry, you don't have permission to do this.")
-        return
-
     if not super_admin_access_enabled():
         await update.effective_message.reply_text(
             "Super admin access is not configured on this server. Set SUPER_ADMIN_SECRET to enable it.",
