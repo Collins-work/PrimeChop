@@ -470,8 +470,6 @@ async def _set_admin_bot_commands(application: Application, chat_id: int) -> Non
             BotCommand("topup", "Top up wallet balance"),
             BotCommand("menu", "Open food menu"),
             BotCommand("help", "Show help"),
-            BotCommand("admin", "Open admin login"),
-            BotCommand("admin_secret", "Enter the super admin password"),
             BotCommand("confirm_order", "Confirm an order payment by tx ref"),
             BotCommand("view_orders", "Waiter order book (available and claimed)"),
             BotCommand("waiters", "View the waiter database"),
