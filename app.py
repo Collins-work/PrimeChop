@@ -14,7 +14,7 @@ from typing import Dict, Optional
 
 import aiohttp
 from aiohttp import web
-from telegram import Bot, BotCommand, BotCommandScopeChat, InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import Bot, BotCommand, BotCommandScopeChat, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup, Update
 from telegram.error import NetworkError, TelegramError
 from telegram.request import HTTPXRequest
 from telegram.warnings import PTBUserWarning
@@ -1219,6 +1219,44 @@ def user_role(user_id: int) -> str:
 
 def is_admin(user_id: int) -> bool:
     return user_id in settings.admin_ids
+
+
+def _normalize_phone(phone: str) -> str:
+    digits = re.sub(r"\D", "", phone or "")
+    if not digits:
+        return ""
+    if digits.startswith("234") and len(digits) == 13:
+        return "+" + digits
+    if digits.startswith("0") and len(digits) == 11:
+        return "+234" + digits[1:]
+    if len(digits) == 10:
+        return "+234" + digits
+    return "+" + digits if (phone or "").strip().startswith("+") else digits
+
+
+def _normalized_admin_phones() -> set[str]:
+    return {_normalize_phone(value) for value in settings.admin_phone_numbers if _normalize_phone(value)}
+
+
+def _admin_contact_request_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        [[KeyboardButton("📱 Share my phone number", request_contact=True)]],
+        resize_keyboard=True,
+        one_time_keyboard=True,
+    )
+
+
+async def _grant_super_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    context.user_data.pop("admin_login_mode", None)
+    context.user_data.pop("admin_phone_verify_mode", None)
+    context.user_data["super_admin"] = True
+    await _set_admin_bot_commands(context.application, user.id)
+    await update.effective_message.reply_text(
+        format_admin_home(),
+        parse_mode="HTML",
+        reply_markup=admin_panel_keyboard(),
+    )
 
 
 def is_waiter(user_id: int) -> bool:
@@ -3191,10 +3229,6 @@ async def waiter_portal_router(update: Update, context: ContextTypes.DEFAULT_TYP
 
 async def admin_secret(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    if not is_admin(user.id):
-        await update.effective_message.reply_text(format_unauthorized(), parse_mode="HTML")
-        return
-
     if not super_admin_access_enabled():
         await update.effective_message.reply_text(
             "Super admin access is not configured on this server. Set SUPER_ADMIN_SECRET to enable it.",
@@ -3220,6 +3254,7 @@ async def admin_secret(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
+
     if not super_admin_access_enabled():
         await update.effective_message.reply_text(
             "Super admin access is not configured on this server. Set SUPER_ADMIN_SECRET to enable it.",
@@ -3233,6 +3268,8 @@ async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=admin_panel_keyboard(),
         )
         return
+
+    context.user_data.pop("admin_phone_verify_mode", None)
 
     context.user_data["admin_login_mode"] = True
     await update.effective_message.reply_text(
@@ -3259,14 +3296,49 @@ async def admin_login_router(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.effective_message.reply_text("Invalid admin password.")
         return
 
-    context.user_data.pop("admin_login_mode", None)
-    context.user_data["super_admin"] = True
-    await _set_admin_bot_commands(context.application, user.id)
-    await update.effective_message.reply_text(
-        format_admin_home(),
-        parse_mode="HTML",
-        reply_markup=admin_panel_keyboard(),
-    )
+    context.user_data.pop("admin_phone_verify_mode", None)
+    await _grant_super_admin(update, context)
+
+
+async def admin_phone_verify_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.user_data.get("admin_phone_verify_mode"):
+        return
+
+    message = update.effective_message
+    user = update.effective_user
+    contact = message.contact
+
+    if not contact:
+        await message.reply_text(
+            "Please tap 'Share my phone number' so I can verify admin access.",
+            reply_markup=_admin_contact_request_keyboard(),
+        )
+        return
+
+    if contact.user_id and contact.user_id != user.id:
+        await message.reply_text(
+            "Please share your own Telegram contact, not someone else's.",
+            reply_markup=_admin_contact_request_keyboard(),
+        )
+        return
+
+    normalized_phone = _normalize_phone(contact.phone_number or "")
+    if not normalized_phone:
+        await message.reply_text(
+            "I couldn't read that phone number. Please share your contact again.",
+            reply_markup=_admin_contact_request_keyboard(),
+        )
+        return
+
+    if normalized_phone not in _normalized_admin_phones():
+        context.user_data.pop("admin_phone_verify_mode", None)
+        await message.reply_text(
+            "❌ This phone number is not authorized for admin access.",
+            reply_markup=home_keyboard(user_role(user.id)),
+        )
+        return
+
+    await _grant_super_admin(update, context)
 
 
 async def admin_waiter_management_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3528,6 +3600,9 @@ async def admin_catalog_edit_router(update: Update, context: ContextTypes.DEFAUL
 
 
 async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if context.user_data.get("admin_phone_verify_mode"):
+        await admin_phone_verify_router(update, context)
+        return
     if context.user_data.get("admin_login_mode"):
         await admin_login_router(update, context)
         return
@@ -5018,7 +5093,7 @@ def main():
     app.add_handler(CallbackQueryHandler(checkout_payment_callback, pattern=r"^checkout:(wallet|korapay|cancel):[a-z0-9]{7}$"))
     app.add_handler(CallbackQueryHandler(start_place_order_callback, pattern=r"^start:place_order$"))
     app.add_handler(CallbackQueryHandler(order_action_callback, pattern=r"^order_action:(my_orders|main_menu)$"))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_router))
+    app.add_handler(MessageHandler((filters.TEXT | filters.CONTACT) & ~filters.COMMAND, text_router))
     app.add_error_handler(log_error)
 
     if settings.webhook_enabled:

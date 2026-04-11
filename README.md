@@ -24,6 +24,7 @@ Then edit `.env`.
 
 - `TELEGRAM_BOT_TOKEN` = your BotFather token
 - `ADMIN_IDS` = comma-separated Telegram user IDs
+- `ADMIN_PHONE_NUMBERS` = comma-separated admin phone numbers for /admin verification (example: `+2349116002889,+2348127812333`)
 - `WAITER_IDS` = comma-separated Telegram user IDs for waiters
 - `BOT_TIMEZONE=Africa/Lagos`
 - `CAFETERIA_NAME=Cafeteria 1`
