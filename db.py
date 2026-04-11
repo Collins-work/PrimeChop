@@ -2,12 +2,21 @@ import sqlite3
 import csv
 import re
 import os
+import logging
 from pathlib import Path
 from collections import defaultdict
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from typing import Iterable, Optional
+
+try:
+    import psycopg
+except Exception:  # pragma: no cover - optional dependency at runtime
+    psycopg = None
+
+
+logger = logging.getLogger(__name__)
 
 
 class _CompatCursor:
@@ -54,12 +63,190 @@ class Database:
     def __init__(self, path: str, timezone_name: str):
         self.path = path
         self.tz = ZoneInfo(timezone_name)
+        self._postgres_mirror_url = (os.getenv("POSTGRES_MIRROR_URL", "") or "").strip()
         self._human_exports_enabled = (os.getenv("HUMAN_READABLE_EXPORTS_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"})
         db_path = Path(path).expanduser()
         base_dir = db_path.parent if db_path.parent and str(db_path.parent) not in {"", "."} else Path.cwd()
         self._human_data_dir = base_dir / "human_readable"
         self._waiter_registry_export_path = self._human_data_dir / "waiter_registry.csv"
         self._orders_users_export_path = self._human_data_dir / "orders_users_tracker.csv"
+
+    def _postgres_mirror_enabled(self) -> bool:
+        return bool(self._postgres_mirror_url) and psycopg is not None
+
+    def _postgres_execute(self, sql: str, params: tuple) -> bool:
+        if not self._postgres_mirror_enabled():
+            return False
+        try:
+            with psycopg.connect(self._postgres_mirror_url) as conn:
+                with conn.cursor() as cur:
+                    cur.execute(sql, params)
+                conn.commit()
+            return True
+        except Exception as exc:
+            logger.warning("Postgres mirror write failed: %s", exc)
+            return False
+
+    def _mirror_waiter_request_by_user_id(self, user_id: int):
+        if not self._postgres_mirror_enabled():
+            return
+        with self.connection() as conn:
+            row = conn.execute(
+                """
+                SELECT
+                    user_id,
+                    public_user_id,
+                    full_name,
+                    details,
+                    status,
+                    reviewed_by,
+                    created_at,
+                    updated_at
+                FROM waiter_requests
+                WHERE user_id=?
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (user_id,),
+            ).fetchone()
+        if not row:
+            return
+        self._postgres_execute(
+            """
+            INSERT INTO waiter_requests (
+                user_id,
+                public_user_id,
+                full_name,
+                details,
+                status,
+                reviewed_by,
+                created_at,
+                updated_at
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (user_id) DO UPDATE SET
+                public_user_id=EXCLUDED.public_user_id,
+                full_name=EXCLUDED.full_name,
+                details=EXCLUDED.details,
+                status=EXCLUDED.status,
+                reviewed_by=EXCLUDED.reviewed_by,
+                updated_at=EXCLUDED.updated_at
+            """,
+            (
+                int(row["user_id"]),
+                row["public_user_id"],
+                row["full_name"],
+                row["details"],
+                row["status"],
+                row["reviewed_by"],
+                row["created_at"],
+                row["updated_at"],
+            ),
+        )
+
+    def _mirror_order_by_id(self, order_id: int):
+        if not self._postgres_mirror_enabled():
+            return
+        with self.connection() as conn:
+            row = conn.execute("SELECT * FROM orders WHERE id=?", (order_id,)).fetchone()
+        if not row:
+            return
+        self._postgres_execute(
+            """
+            INSERT INTO orders (
+                id,
+                order_ref,
+                customer_id,
+                item_id,
+                cafeteria_name,
+                amount,
+                order_details,
+                room_number,
+                delivery_time,
+                hall_name,
+                status,
+                payment_method,
+                payment_provider,
+                payment_tx_ref,
+                payment_link,
+                customer_rating,
+                customer_feedback,
+                rating_submitted_at,
+                accepted_at,
+                completed_at,
+                eta_minutes,
+                eta_due_at,
+                waiter_id,
+                service_fee_total,
+                waiter_share,
+                platform_share,
+                created_at,
+                updated_at
+            )
+            VALUES (
+                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                %s, %s, %s, %s, %s, %s, %s, %s
+            )
+            ON CONFLICT (id) DO UPDATE SET
+                order_ref=EXCLUDED.order_ref,
+                customer_id=EXCLUDED.customer_id,
+                item_id=EXCLUDED.item_id,
+                cafeteria_name=EXCLUDED.cafeteria_name,
+                amount=EXCLUDED.amount,
+                order_details=EXCLUDED.order_details,
+                room_number=EXCLUDED.room_number,
+                delivery_time=EXCLUDED.delivery_time,
+                hall_name=EXCLUDED.hall_name,
+                status=EXCLUDED.status,
+                payment_method=EXCLUDED.payment_method,
+                payment_provider=EXCLUDED.payment_provider,
+                payment_tx_ref=EXCLUDED.payment_tx_ref,
+                payment_link=EXCLUDED.payment_link,
+                customer_rating=EXCLUDED.customer_rating,
+                customer_feedback=EXCLUDED.customer_feedback,
+                rating_submitted_at=EXCLUDED.rating_submitted_at,
+                accepted_at=EXCLUDED.accepted_at,
+                completed_at=EXCLUDED.completed_at,
+                eta_minutes=EXCLUDED.eta_minutes,
+                eta_due_at=EXCLUDED.eta_due_at,
+                waiter_id=EXCLUDED.waiter_id,
+                service_fee_total=EXCLUDED.service_fee_total,
+                waiter_share=EXCLUDED.waiter_share,
+                platform_share=EXCLUDED.platform_share,
+                updated_at=EXCLUDED.updated_at
+            """,
+            (
+                int(row["id"]),
+                row["order_ref"],
+                int(row["customer_id"]),
+                int(row["item_id"]),
+                row["cafeteria_name"],
+                int(row["amount"]),
+                row["order_details"],
+                row["room_number"],
+                row["delivery_time"],
+                row["hall_name"],
+                row["status"],
+                row["payment_method"],
+                row["payment_provider"],
+                row["payment_tx_ref"],
+                row["payment_link"],
+                row["customer_rating"],
+                row["customer_feedback"],
+                row["rating_submitted_at"],
+                row["accepted_at"],
+                row["completed_at"],
+                row["eta_minutes"],
+                row["eta_due_at"],
+                row["waiter_id"],
+                int(row["service_fee_total"] or 0),
+                int(row["waiter_share"] or 0),
+                int(row["platform_share"] or 0),
+                row["created_at"],
+                row["updated_at"],
+            ),
+        )
 
     @contextmanager
     def connection(self):
@@ -729,6 +916,7 @@ class Database:
             ).fetchall()
 
     def deactivate_waiter(self, identifier: str) -> Optional[sqlite3.Row]:
+        now = self.now_iso()
         with self.connection() as conn:
             if identifier.isdigit():
                 row = conn.execute(
@@ -744,8 +932,18 @@ class Database:
             if not row:
                 return None
 
+            conn.execute(
+                """
+                INSERT INTO waiter_requests (
+                    user_id, public_user_id, full_name, details, status, reviewed_by, created_at, updated_at
+                )
+                VALUES (?, NULL, ?, 'waiter removed by admin', 'deleted', NULL, ?, ?)
+                """,
+                (int(row["user_id"]), row["full_name"] or "", now, now),
+            )
             conn.execute("DELETE FROM users WHERE user_id=?", (row["user_id"],))
         self._refresh_waiter_registry_export()
+        self._mirror_waiter_request_by_user_id(int(row["user_id"]))
         return row
 
     def waiter_performance(self, limit: int = 20) -> list[sqlite3.Row]:
@@ -805,6 +1003,7 @@ class Database:
                     (existing["id"],),
                 ).fetchone()
                 self._refresh_waiter_registry_export()
+                self._mirror_waiter_request_by_user_id(int(user_id))
                 return updated
 
             cursor = conn.execute(
@@ -823,6 +1022,7 @@ class Database:
                 (int(inserted_row["id"]),),
             ).fetchone()
             self._refresh_waiter_registry_export()
+            self._mirror_waiter_request_by_user_id(int(user_id))
             return created
 
     def list_pending_waiter_requests(self, limit: int = 20) -> list[sqlite3.Row]:
@@ -888,6 +1088,7 @@ class Database:
                 (request_id,),
             ).fetchone()
         self._refresh_waiter_registry_export()
+        self._mirror_waiter_request_by_user_id(int(request["user_id"]))
         return updated
 
     def reject_waiter_request(self, request_id: int, admin_user_id: int) -> Optional[sqlite3.Row]:
@@ -913,6 +1114,7 @@ class Database:
                 (request_id,),
             ).fetchone()
         self._refresh_waiter_registry_export()
+        self._mirror_waiter_request_by_user_id(int(request["user_id"]))
         return updated
 
     def get_online_waiters(self, allowed_waiter_ids: set[int]) -> Iterable[sqlite3.Row]:
@@ -1236,7 +1438,9 @@ class Database:
             )
             inserted = cursor.fetchone()
         self._refresh_orders_users_export()
-        return int(inserted["id"])
+        order_id = int(inserted["id"])
+        self._mirror_order_by_id(order_id)
+        return order_id
 
     def get_order(self, order_id: int) -> Optional[sqlite3.Row]:
         with self.connection() as conn:
@@ -1549,6 +1753,7 @@ class Database:
             )
             updated = conn.execute("SELECT * FROM orders WHERE id=?", (order["id"],)).fetchone()
         self._refresh_orders_users_export()
+        self._mirror_order_by_id(int(order["id"]))
         return updated
 
     def claim_order(self, order_id: int, waiter_id: int, eta_minutes: int | None = None) -> bool:
@@ -1566,6 +1771,7 @@ class Database:
             )
         if cursor.rowcount == 1:
             self._refresh_orders_users_export()
+            self._mirror_order_by_id(int(order_id))
             return True
         return False
 
@@ -1582,6 +1788,7 @@ class Database:
             )
         if cursor.rowcount == 1:
             self._refresh_orders_users_export()
+            self._mirror_order_by_id(int(order_id))
             return True
         return False
 
@@ -1756,4 +1963,6 @@ class Database:
                 (user_id, -amount, wallet_tx_ref, now, now),
             )
             self._refresh_orders_users_export()
-            return int(inserted["id"])
+            order_id = int(inserted["id"])
+            self._mirror_order_by_id(order_id)
+            return order_id
