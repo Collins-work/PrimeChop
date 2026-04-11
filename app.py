@@ -18,7 +18,7 @@ from typing import Dict, Optional
 import aiohttp
 from aiohttp import web
 from telegram import Bot, BotCommand, BotCommandScopeChat, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup, Update
-from telegram.error import NetworkError, TelegramError
+from telegram.error import BadRequest, Forbidden, NetworkError, TelegramError
 from telegram.request import HTTPXRequest
 from telegram.warnings import PTBUserWarning
 from telegram.ext import (
@@ -431,6 +431,44 @@ def _parse_waiter_registration_details(details: str) -> tuple[dict | None, str |
         },
         None,
     )
+
+
+def _is_unreachable_chat_error(exc: TelegramError) -> bool:
+    message = str(exc).strip().lower()
+    return (
+        "chat not found" in message
+        or "forbidden" in message
+        or "bot was blocked by the user" in message
+        or "user is deactivated" in message
+    )
+
+
+async def _safe_send_message(
+    bot,
+    *,
+    chat_id: int,
+    text: str,
+    parse_mode: str | None = None,
+    reply_markup=None,
+    log_context: str = "send_message",
+) -> bool:
+    try:
+        await bot.send_message(
+            chat_id=chat_id,
+            text=text,
+            parse_mode=parse_mode,
+            reply_markup=reply_markup,
+        )
+        return True
+    except (BadRequest, Forbidden) as exc:
+        if _is_unreachable_chat_error(exc):
+            logger.warning("Skipped %s to chat %s: %s", log_context, chat_id, exc)
+            return False
+        logger.exception("Failed %s to chat %s", log_context, chat_id)
+        return False
+    except TelegramError:
+        logger.exception("Failed %s to chat %s", log_context, chat_id)
+        return False
 
 
 async def _set_public_bot_commands(application: Application, chat_id: int | None = None) -> None:
@@ -3220,15 +3258,14 @@ async def waiter_register_details_step(update: Update, context: ContextTypes.DEF
         f"<b>Gender:</b> {parsed_details['gender']}"
     )
     for admin_id in settings.admin_ids:
-        try:
-            await context.bot.send_message(
-                chat_id=admin_id,
-                text=admin_notice,
-                parse_mode="HTML",
-                reply_markup=waiter_request_actions_keyboard(request_id),
-            )
-        except Exception:
-            logger.exception("Failed to send waiter request notification to admin %s", admin_id)
+        await _safe_send_message(
+            context.bot,
+            chat_id=admin_id,
+            text=admin_notice,
+            parse_mode="HTML",
+            reply_markup=waiter_request_actions_keyboard(request_id),
+            log_context="waiter registration admin notification",
+        )
 
 
 async def waiter_login_code_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -4099,17 +4136,16 @@ async def admin_panel_callback(update: Update, context: ContextTypes.DEFAULT_TYP
                 chat_id=user.id,
                 text=f"✅ Waiter request {request_id} approved with code {waiter_code}.",
             )
-            try:
-                await context.bot.send_message(
-                    chat_id=result["user_id"],
-                    text=(
-                        "✅ Your waiter registration has been approved.\n\n"
-                        f"Your waiter code: {waiter_code}\n"
-                        "Use Become a Waiter > Login with Code to activate your waiter account."
-                    ),
-                )
-            except Exception:
-                logger.exception("Failed to notify waiter approval for user %s", result["user_id"])
+            await _safe_send_message(
+                context.bot,
+                chat_id=int(result["user_id"]),
+                text=(
+                    "✅ Your waiter registration has been approved.\n\n"
+                    f"Your waiter code: {waiter_code}\n"
+                    "Use Become a Waiter > Login with Code to activate your waiter account."
+                ),
+                log_context="waiter approval notification",
+            )
             return
 
         result = db.reject_waiter_request(request_id, user.id)
@@ -4117,13 +4153,12 @@ async def admin_panel_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             await context.bot.send_message(chat_id=user.id, text="Request already processed or not found.")
             return
         await context.bot.send_message(chat_id=user.id, text=f"❌ Waiter request {request_id} rejected.")
-        try:
-            await context.bot.send_message(
-                chat_id=result["user_id"],
-                text="Your waiter request was not approved this time. Contact support for details.",
-            )
-        except Exception:
-            logger.exception("Failed to notify waiter rejection for user %s", result["user_id"])
+        await _safe_send_message(
+            context.bot,
+            chat_id=int(result["user_id"]),
+            text="Your waiter request was not approved this time. Contact support for details.",
+            log_context="waiter rejection notification",
+        )
 
 
 async def admin_invite_user_id_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
