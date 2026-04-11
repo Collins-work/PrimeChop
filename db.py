@@ -2,22 +2,12 @@ import sqlite3
 import csv
 import re
 import os
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from pathlib import Path
 from collections import defaultdict
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from typing import Iterable, Optional
-
-try:
-    import psycopg
-    from psycopg.rows import dict_row
-    from psycopg import OperationalError as PsycopgOperationalError
-except Exception:  # pragma: no cover - optional at import time
-    psycopg = None
-    dict_row = None
-    PsycopgOperationalError = Exception
 
 
 class _CompatCursor:
@@ -45,22 +35,12 @@ class _CompatCursor:
 
 
 class _CompatConnection:
-    def __init__(self, inner_connection, is_postgres: bool):
+    def __init__(self, inner_connection):
         self._inner = inner_connection
-        self._is_postgres = is_postgres
-
-    def _convert_sql(self, sql: str) -> str:
-        if not self._is_postgres:
-            return sql
-        stripped = sql.strip().upper()
-        if stripped == "BEGIN IMMEDIATE":
-            return "BEGIN"
-        return sql.replace("?", "%s")
 
     def execute(self, sql: str, params: tuple | list | None = None):
-        converted = self._convert_sql(sql)
         values = tuple(params) if params is not None else tuple()
-        cursor = self._inner.execute(converted, values)
+        cursor = self._inner.execute(sql, values)
         return _CompatCursor(cursor)
 
     def commit(self):
@@ -74,8 +54,6 @@ class Database:
     def __init__(self, path: str, timezone_name: str):
         self.path = path
         self.tz = ZoneInfo(timezone_name)
-        self._is_postgres = str(path).strip().lower().startswith(("postgres://", "postgresql://"))
-        self._postgres_dsn = self._prepare_postgres_dsn(path) if self._is_postgres else ""
         self._human_exports_enabled = (os.getenv("HUMAN_READABLE_EXPORTS_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"})
         db_path = Path(path).expanduser()
         base_dir = db_path.parent if db_path.parent and str(db_path.parent) not in {"", "."} else Path.cwd()
@@ -83,241 +61,19 @@ class Database:
         self._waiter_registry_export_path = self._human_data_dir / "waiter_registry.csv"
         self._orders_users_export_path = self._human_data_dir / "orders_users_tracker.csv"
 
-    def _prepare_postgres_dsn(self, dsn: str) -> str:
-        raw = (dsn or "").strip()
-        if not raw:
-            return raw
-        try:
-            parts = urlsplit(raw)
-            query = dict(parse_qsl(parts.query, keep_blank_values=True))
-            if "sslmode" not in query:
-                # Railway external Postgres endpoints generally require TLS.
-                query["sslmode"] = "require"
-            if "connect_timeout" not in query:
-                query["connect_timeout"] = "10"
-            new_query = urlencode(query)
-            return urlunsplit((parts.scheme, parts.netloc, parts.path, new_query, parts.fragment))
-        except Exception:
-            return raw
-
-    def _postgres_dsn_with_sslmode(self, dsn: str, sslmode: str) -> str:
-        try:
-            parts = urlsplit(dsn)
-            query = dict(parse_qsl(parts.query, keep_blank_values=True))
-            query["sslmode"] = sslmode
-            if "connect_timeout" not in query:
-                query["connect_timeout"] = "10"
-            new_query = urlencode(query)
-            return urlunsplit((parts.scheme, parts.netloc, parts.path, new_query, parts.fragment))
-        except Exception:
-            return dsn
-
-    def _postgres_connection_attempts(self) -> list[str]:
-        base = self._postgres_dsn or self.path
-        attempts: list[str] = []
-        seen: set[str] = set()
-
-        candidates = [
-            base,
-            self._postgres_dsn_with_sslmode(base, "require"),
-            self._postgres_dsn_with_sslmode(base, "prefer"),
-            self._postgres_dsn_with_sslmode(base, "disable"),
-        ]
-
-        for candidate in candidates:
-            if candidate and candidate not in seen:
-                seen.add(candidate)
-                attempts.append(candidate)
-
-        database_url = (os.getenv("DATABASE_URL") or "").strip()
-        if database_url:
-            normalized = self._prepare_postgres_dsn(database_url)
-            for candidate in (
-                normalized,
-                self._postgres_dsn_with_sslmode(normalized, "require"),
-                self._postgres_dsn_with_sslmode(normalized, "prefer"),
-            ):
-                if candidate and candidate not in seen:
-                    seen.add(candidate)
-                    attempts.append(candidate)
-
-        return attempts
-
     @contextmanager
     def connection(self):
-        if self._is_postgres:
-            if psycopg is None:
-                raise RuntimeError("PostgreSQL driver is not installed. Add psycopg[binary] to requirements.")
-            last_error = None
-            raw_conn = None
-            for attempt_dsn in self._postgres_connection_attempts():
-                try:
-                    raw_conn = psycopg.connect(attempt_dsn, row_factory=dict_row)
-                    break
-                except PsycopgOperationalError as exc:
-                    last_error = exc
-                    continue
-            if raw_conn is None:
-                raise RuntimeError(
-                    "Unable to connect to PostgreSQL after multiple SSL attempts. "
-                    "Verify Railway DB URL/credentials and networking. "
-                    f"Last error: {last_error}"
-                )
-            conn = _CompatConnection(raw_conn, is_postgres=True)
-        else:
-            db_path = Path(self.path).expanduser()
-            if db_path.parent and str(db_path.parent) not in {"", "."}:
-                db_path.parent.mkdir(parents=True, exist_ok=True)
-            raw_conn = sqlite3.connect(str(db_path))
-            raw_conn.row_factory = sqlite3.Row
-            conn = _CompatConnection(raw_conn, is_postgres=False)
+        db_path = Path(self.path).expanduser()
+        if db_path.parent and str(db_path.parent) not in {"", "."}:
+            db_path.parent.mkdir(parents=True, exist_ok=True)
+        raw_conn = sqlite3.connect(str(db_path))
+        raw_conn.row_factory = sqlite3.Row
+        conn = _CompatConnection(raw_conn)
         try:
             yield conn
             conn.commit()
         finally:
             conn.close()
-
-    def _postgres_required_tables_exist(self) -> bool:
-        required = {
-            "users",
-            "menu_items",
-            "orders",
-            "wallet_transactions",
-            "waiter_requests",
-            "vendors",
-        }
-        with self.connection() as conn:
-            rows = conn.execute(
-                """
-                SELECT table_name
-                FROM information_schema.tables
-                WHERE table_schema = 'public'
-                """
-            ).fetchall()
-        existing = {str(row["table_name"]).strip() for row in rows}
-        return required.issubset(existing)
-
-    def _ensure_postgres_schema(self):
-        with self.connection() as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS users (
-                    user_id BIGINT PRIMARY KEY,
-                    full_name TEXT,
-                    role TEXT NOT NULL DEFAULT 'customer',
-                    wallet_balance BIGINT NOT NULL DEFAULT 0,
-                    waiter_online INTEGER NOT NULL DEFAULT 0,
-                    waiter_code TEXT,
-                    waiter_verified INTEGER NOT NULL DEFAULT 0,
-                    created_at TIMESTAMPTZ NOT NULL,
-                    updated_at TIMESTAMPTZ NOT NULL
-                )
-                """
-            )
-            conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_waiter_code ON users(waiter_code)")
-
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS vendors (
-                    id BIGSERIAL PRIMARY KEY,
-                    name TEXT NOT NULL UNIQUE,
-                    active INTEGER NOT NULL DEFAULT 1,
-                    created_at TIMESTAMPTZ NOT NULL,
-                    updated_at TIMESTAMPTZ NOT NULL
-                )
-                """
-            )
-
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS menu_items (
-                    id BIGSERIAL PRIMARY KEY,
-                    vendor_id BIGINT,
-                    name TEXT NOT NULL,
-                    price BIGINT NOT NULL,
-                    meal_slot TEXT DEFAULT 'any',
-                    image_file_id TEXT,
-                    image_url TEXT,
-                    active INTEGER DEFAULT 1,
-                    created_at TIMESTAMPTZ NOT NULL,
-                    updated_at TIMESTAMPTZ NOT NULL
-                )
-                """
-            )
-
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS orders (
-                    id BIGSERIAL PRIMARY KEY,
-                    order_ref TEXT UNIQUE,
-                    customer_id BIGINT NOT NULL,
-                    item_id BIGINT NOT NULL,
-                    cafeteria_name TEXT NOT NULL,
-                    amount BIGINT NOT NULL,
-                    order_details TEXT,
-                    room_number TEXT,
-                    delivery_time TEXT,
-                    hall_name TEXT,
-                    status TEXT NOT NULL,
-                    payment_method TEXT DEFAULT 'transfer',
-                    payment_provider TEXT DEFAULT 'korapay',
-                    payment_tx_ref TEXT,
-                    payment_link TEXT,
-                    customer_rating INTEGER,
-                    customer_feedback TEXT,
-                    rating_submitted_at TIMESTAMPTZ,
-                    accepted_at TIMESTAMPTZ,
-                    completed_at TIMESTAMPTZ,
-                    eta_minutes INTEGER,
-                    eta_due_at TIMESTAMPTZ,
-                    waiter_id BIGINT,
-                    service_fee_total BIGINT NOT NULL,
-                    waiter_share BIGINT NOT NULL,
-                    platform_share BIGINT NOT NULL,
-                    created_at TIMESTAMPTZ NOT NULL,
-                    updated_at TIMESTAMPTZ NOT NULL
-                )
-                """
-            )
-            conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_order_ref ON orders(order_ref)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_orders_customer_id ON orders(customer_id)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_orders_waiter_id ON orders(waiter_id)")
-
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS wallet_transactions (
-                    id BIGSERIAL PRIMARY KEY,
-                    user_id BIGINT NOT NULL,
-                    amount BIGINT NOT NULL,
-                    tx_type TEXT NOT NULL,
-                    tx_ref TEXT,
-                    payment_link TEXT,
-                    status TEXT NOT NULL,
-                    created_at TIMESTAMPTZ NOT NULL,
-                    updated_at TIMESTAMPTZ NOT NULL
-                )
-                """
-            )
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_wallet_transactions_user_id ON wallet_transactions(user_id)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_wallet_transactions_tx_ref ON wallet_transactions(tx_ref)")
-
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS waiter_requests (
-                    id BIGSERIAL PRIMARY KEY,
-                    user_id BIGINT NOT NULL,
-                    public_user_id TEXT UNIQUE,
-                    full_name TEXT NOT NULL,
-                    details TEXT,
-                    status TEXT NOT NULL DEFAULT 'pending',
-                    reviewed_by BIGINT,
-                    created_at TIMESTAMPTZ NOT NULL,
-                    updated_at TIMESTAMPTZ NOT NULL
-                )
-                """
-            )
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_waiter_requests_status ON waiter_requests(status)")
-            conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_waiter_requests_public_user_id ON waiter_requests(public_user_id)")
 
     def now_iso(self) -> str:
         return datetime.now(self.tz).isoformat()
@@ -723,11 +479,6 @@ class Database:
         )
 
     def init(self):
-        if self._is_postgres:
-            self._ensure_postgres_schema()
-            self.refresh_human_readable_exports()
-            return
-
         with self.connection() as conn:
             conn.execute(
                 """

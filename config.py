@@ -76,21 +76,8 @@ def _normalize_google_sheet_id(raw: str) -> str:
 
 def _resolve_db_path() -> str:
     explicit_db_path = (os.getenv("DB_PATH", "") or "").strip()
-    database_url = (os.getenv("DATABASE_URL", "") or "").strip()
-    is_railway = bool(
-        os.getenv("RAILWAY_PROJECT_ID")
-        or os.getenv("RAILWAY_ENVIRONMENT_ID")
-        or os.getenv("RAILWAY_SERVICE_ID")
-        or os.getenv("RAILWAY_STATIC_URL")
-    )
-
-    # On Railway, prefer DATABASE_URL when available so bot uses managed Postgres automatically.
-    if is_railway and database_url:
-        return database_url
     if explicit_db_path:
         return explicit_db_path
-    if database_url:
-        return database_url
     return "primechop.db"
 
 
