@@ -37,34 +37,91 @@ class Database:
 
     def _refresh_waiter_registry_export(self):
         with self.connection() as conn:
-            rows = conn.execute(
+            waiter_users = conn.execute(
                 """
                 SELECT
-                    u.user_id,
-                    u.full_name,
-                    u.role,
-                    u.waiter_online,
-                    u.waiter_code,
-                    u.waiter_verified,
-                    u.created_at,
-                    u.updated_at,
-                    wr.public_user_id,
-                    wr.details AS registration_details,
-                    wr.status AS request_status
-                FROM users u
-                LEFT JOIN waiter_requests wr
-                  ON wr.user_id = u.user_id
-                 AND wr.id = (
-                     SELECT id
-                     FROM waiter_requests wr2
-                     WHERE wr2.user_id = u.user_id
-                     ORDER BY wr2.id DESC
-                     LIMIT 1
-                 )
-                WHERE u.role='waiter' OR u.waiter_verified=1
-                ORDER BY COALESCE(u.waiter_code, ''), u.user_id ASC
+                    user_id,
+                    full_name,
+                    role,
+                    waiter_online,
+                    waiter_code,
+                    waiter_verified,
+                    created_at,
+                    updated_at
+                FROM users
+                WHERE role='waiter' OR waiter_verified=1
+                ORDER BY user_id ASC
                 """
             ).fetchall()
+            latest_requests = conn.execute(
+                """
+                SELECT
+                    wr.user_id,
+                    wr.public_user_id,
+                    wr.full_name AS request_full_name,
+                    wr.details AS registration_details,
+                    wr.status AS request_status,
+                    wr.created_at AS request_created_at,
+                    wr.updated_at AS request_updated_at
+                FROM waiter_requests wr
+                WHERE wr.id = (
+                    SELECT wr2.id
+                    FROM waiter_requests wr2
+                    WHERE wr2.user_id = wr.user_id
+                    ORDER BY wr2.id DESC
+                    LIMIT 1
+                )
+                ORDER BY wr.user_id ASC
+                """
+            ).fetchall()
+
+        users_by_id: dict[int, dict] = {}
+        for row in waiter_users:
+            user_id = int(row["user_id"] or 0)
+            users_by_id[user_id] = {
+                "user_id": user_id,
+                "full_name": row["full_name"] or "",
+                "role": row["role"] or "",
+                "waiter_online": int(row["waiter_online"] or 0),
+                "waiter_code": row["waiter_code"] or "",
+                "waiter_verified": int(row["waiter_verified"] or 0),
+                "public_user_id": "",
+                "request_status": "",
+                "registration_details": "",
+                "created_at": row["created_at"] or "",
+                "updated_at": row["updated_at"] or "",
+            }
+
+        for request in latest_requests:
+            user_id = int(request["user_id"] or 0)
+            existing = users_by_id.get(user_id)
+            if existing:
+                existing["public_user_id"] = request["public_user_id"] or ""
+                existing["request_status"] = request["request_status"] or ""
+                existing["registration_details"] = request["registration_details"] or ""
+            else:
+                users_by_id[user_id] = {
+                    "user_id": user_id,
+                    "full_name": request["request_full_name"] or "",
+                    "role": "pending_waiter",
+                    "waiter_online": 0,
+                    "waiter_code": "",
+                    "waiter_verified": 0,
+                    "public_user_id": request["public_user_id"] or "",
+                    "request_status": request["request_status"] or "",
+                    "registration_details": request["registration_details"] or "",
+                    "created_at": request["request_created_at"] or "",
+                    "updated_at": request["request_updated_at"] or "",
+                }
+
+        rows = sorted(
+            users_by_id.values(),
+            key=lambda row: (
+                row.get("waiter_code") or "",
+                row.get("public_user_id") or "",
+                int(row.get("user_id") or 0),
+            ),
+        )
 
         self._human_data_dir.mkdir(parents=True, exist_ok=True)
         with self._waiter_registry_export_path.open("w", newline="", encoding="utf-8") as handle:
@@ -87,17 +144,17 @@ class Database:
             for row in rows:
                 writer.writerow(
                     [
-                        int(row["user_id"] or 0),
-                        row["full_name"] or "",
-                        row["role"] or "",
-                        int(row["waiter_online"] or 0),
-                        row["waiter_code"] or "",
-                        int(row["waiter_verified"] or 0),
-                        row["public_user_id"] or "",
-                        row["request_status"] or "",
-                        row["registration_details"] or "",
-                        row["created_at"] or "",
-                        row["updated_at"] or "",
+                        int(row.get("user_id") or 0),
+                        row.get("full_name") or "",
+                        row.get("role") or "",
+                        int(row.get("waiter_online") or 0),
+                        row.get("waiter_code") or "",
+                        int(row.get("waiter_verified") or 0),
+                        row.get("public_user_id") or "",
+                        row.get("request_status") or "",
+                        row.get("registration_details") or "",
+                        row.get("created_at") or "",
+                        row.get("updated_at") or "",
                     ]
                 )
 

@@ -2365,6 +2365,7 @@ def _is_new_this_week(iso_text: str | None) -> bool:
 
 def build_waiter_management_stats() -> str:
     waiters = db.list_waiters(limit=100)
+    pending_requests = db.list_pending_waiter_requests(limit=200)
     total = len(waiters)
     active = sum(1 for w in waiters if w["role"] == "waiter" and w["waiter_online"])
     new_week = sum(1 for w in waiters if _is_new_this_week(w["updated_at"]))
@@ -2376,6 +2377,7 @@ def build_waiter_management_stats() -> str:
         f"Total waiters: {total}",
         f"Active: {active}",
         f"New this week: {new_week}",
+        f"Pending approvals: {len(pending_requests)}",
         "",
         "Recent waiters:",
     ]
@@ -3393,8 +3395,8 @@ async def admin_waiter_management_callback(update: Update, context: ContextTypes
     await query.answer()
     user = query.from_user
 
-    if not has_super_admin_access(user.id, context):
-        await query.answer("Please login via /admin first.", show_alert=True)
+    if not (has_super_admin_access(user.id, context) or is_admin(user.id)):
+        await query.answer("Only admins can use waiter management.", show_alert=True)
         return
 
     action = query.data.split(":", 1)[1]
@@ -3691,11 +3693,16 @@ async def admin_panel_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     await query.answer()
 
     user = query.from_user
-    if not has_super_admin_access(user.id, context):
-        await query.answer("Run /admin_secret first.", show_alert=True)
-        return
-
     data = query.data
+    parts = data.split(":")
+    waiter_review_action = len(parts) == 3 and parts[1] in {"approve_waiter", "reject_waiter"}
+
+    if not has_super_admin_access(user.id, context):
+        if waiter_review_action and is_admin(user.id):
+            pass
+        else:
+            await query.answer("Run /admin first and login.", show_alert=True)
+            return
     if data == "admin:menu":
         await _edit_or_send_callback_message(
             query,
@@ -4074,7 +4081,6 @@ async def admin_panel_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         await context.bot.send_message(chat_id=user.id, text="🔒 Superior admin session closed.")
         return
 
-    parts = data.split(":")
     if len(parts) == 3 and parts[1] in {"approve_waiter", "reject_waiter"}:
         try:
             request_id = int(parts[2])
