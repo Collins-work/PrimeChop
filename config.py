@@ -65,6 +65,7 @@ def _parse_bool(raw: str, default: bool = False) -> bool:
 @dataclass(frozen=True)
 class Settings:
     telegram_bot_token: str
+    db_path: str
     webhook_enabled: bool
     webhook_base_url: str
     webhook_path: str
@@ -113,6 +114,7 @@ class Settings:
 
 settings = Settings(
     telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", "").strip(),
+    db_path=os.getenv("DB_PATH", "primechop.db").strip() or "primechop.db",
     webhook_enabled=_parse_bool(
         os.getenv("WEBHOOK_ENABLED", ""),
         default=bool(os.getenv("RENDER") and os.getenv("WEBHOOK_BASE_URL")),
@@ -150,7 +152,7 @@ settings = Settings(
         "https://api.korapay.com/merchant/api/v1/charges/initialize",
     ).strip(),
     korapay_web_host=os.getenv("KORAPAY_WEB_HOST", "0.0.0.0").strip(),
-    korapay_web_port=int(os.getenv("KORAPAY_WEB_PORT", "8080")),
+    korapay_web_port=int(os.getenv("KORAPAY_WEB_PORT", os.getenv("PORT", "8080"))),
     service_fee_total=int(os.getenv("SERVICE_FEE_TOTAL", "500")),
     service_fee_split_mode=os.getenv("SERVICE_FEE_SPLIT_MODE", "equal").strip().lower(),
     placeholder_image_url=os.getenv(

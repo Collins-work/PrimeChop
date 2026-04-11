@@ -26,6 +26,7 @@ Then edit `.env`.
 - `ADMIN_IDS` = comma-separated Telegram user IDs
 - `ADMIN_PHONE_NUMBERS` = comma-separated admin phone numbers for /admin verification (example: `+2349116002889,+2348127812333`)
 - `WAITER_IDS` = comma-separated Telegram user IDs for waiters
+- `DB_PATH` = SQLite file path for app data (example on Render disk: `/var/data/primechop.db`)
 - `BOT_TIMEZONE=Africa/Lagos`
 - `CAFETERIA_NAME=Cafeteria 1`
 - `ORDER_VENDORS` = comma-separated vendor names shown during ordering

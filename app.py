@@ -1,5 +1,8 @@
 import asyncio
 import ast
+import hashlib
+import hmac
+import json
 import logging
 import operator
 import random
@@ -858,7 +861,7 @@ async def prime_chat_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-db = Database(path="primechop.db", timezone_name=settings.bot_timezone)
+db = Database(path=settings.db_path, timezone_name=settings.bot_timezone)
 audit_trail = ExcelAuditTrail(
     file_path=settings.excel_audit_file,
     enabled=settings.excel_audit_enabled,
@@ -970,17 +973,49 @@ def _is_korapay_success(payload: dict, query: dict) -> bool:
     return status in {"success", "successful", "completed", "paid", "payment_successful", "charge.success"}
 
 
+def _is_korapay_signature_valid(raw_body: bytes, signature: str) -> bool:
+    if not signature or not settings.korapay_secret_key:
+        return False
+
+    normalized_signature = signature.strip().lower()
+    for digest in (hashlib.sha256, hashlib.sha512):
+        computed = hmac.new(
+            settings.korapay_secret_key.encode("utf-8"),
+            raw_body,
+            digest,
+        ).hexdigest().lower()
+        if hmac.compare_digest(computed, normalized_signature):
+            return True
+    return False
+
+
 async def korapay_wallet_callback(request: web.Request) -> web.Response:
     payload = {}
+    raw_body = b""
     try:
         if request.can_read_body:
-            if request.content_type == "application/json":
-                payload = await request.json()
+            raw_body = await request.read()
+            if (request.content_type or "").startswith("application/json"):
+                payload = json.loads(raw_body.decode("utf-8") or "{}") if raw_body else {}
             else:
                 form_data = await request.post()
                 payload = dict(form_data)
     except Exception:
         payload = {}
+
+    signature = (
+        request.headers.get("x-korapay-signature")
+        or request.headers.get("korapay-signature")
+        or request.headers.get("x-signature")
+        or ""
+    )
+
+    if settings.korapay_mode != "mock":
+        if not raw_body:
+            return web.Response(text="Invalid callback body", status=400)
+        if not _is_korapay_signature_valid(raw_body, signature):
+            logger.warning("Rejected KoraPay callback due to invalid signature")
+            return web.Response(text="Invalid callback signature", status=401)
 
     query = dict(request.query)
     reference = _extract_korapay_reference(payload if isinstance(payload, dict) else {}, query)

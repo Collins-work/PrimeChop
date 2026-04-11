@@ -1,5 +1,6 @@
 import sqlite3
 import re
+from pathlib import Path
 from collections import defaultdict
 from contextlib import contextmanager
 from datetime import datetime
@@ -14,7 +15,10 @@ class Database:
 
     @contextmanager
     def connection(self):
-        conn = sqlite3.connect(self.path)
+        db_path = Path(self.path).expanduser()
+        if db_path.parent and str(db_path.parent) not in {"", "."}:
+            db_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(db_path))
         conn.row_factory = sqlite3.Row
         try:
             yield conn
