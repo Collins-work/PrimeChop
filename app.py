@@ -1,5 +1,6 @@
 import asyncio
 import ast
+import html
 import hashlib
 import hmac
 import json
@@ -1805,6 +1806,23 @@ def _get_cart(context: ContextTypes.DEFAULT_TYPE) -> dict[int, int]:
     return normalized
 
 
+def _get_cart_notes(context: ContextTypes.DEFAULT_TYPE) -> dict[int, str]:
+    cart_notes = context.user_data.get("cart_notes")
+    if not isinstance(cart_notes, dict):
+        cart_notes = {}
+    normalized: dict[int, str] = {}
+    for key, value in cart_notes.items():
+        try:
+            item_id = int(key)
+        except (TypeError, ValueError):
+            continue
+        note_text = " ".join(str(value or "").strip().split())
+        if note_text:
+            normalized[item_id] = note_text[:240]
+    context.user_data["cart_notes"] = normalized
+    return normalized
+
+
 def _get_item_selection(context: ContextTypes.DEFAULT_TYPE) -> dict:
     selection = context.user_data.get("item_selection")
     if not isinstance(selection, dict):
@@ -1821,7 +1839,17 @@ def _build_item_selection_text(item_name: str, price: int, quantity: int, vendor
         f"💰 <b>Price:</b> ₦{price:,}\n"
         f"🔢 <b>Quantity:</b> {quantity}\n"
         f"🧾 <b>Subtotal:</b> ₦{subtotal:,}\n\n"
-        "Use the buttons below to update quantity or add this item to cart."
+        "Use Add to Cart to continue and optionally include a delivery note."
+    )
+
+
+def _catalog_note_choice_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("📝 Add with Note", callback_data="catalog:add_with_note")],
+            [InlineKeyboardButton("➕ Add without Note", callback_data="catalog:add_without_note")],
+            [InlineKeyboardButton("⬅️ Back to Products", callback_data="catalog:back_items")],
+        ]
     )
 
 
@@ -1845,6 +1873,7 @@ def _current_item_selection_keyboard() -> InlineKeyboardMarkup:
 
 def _cart_lines_and_total(context: ContextTypes.DEFAULT_TYPE) -> tuple[list[str], int, list[dict]]:
     cart = _get_cart(context)
+    cart_notes = _get_cart_notes(context)
     lines: list[str] = []
     rows: list[dict] = []
     total = 0
@@ -1855,8 +1884,12 @@ def _cart_lines_and_total(context: ContextTypes.DEFAULT_TYPE) -> tuple[list[str]
         unit_price = int(item["price"] or 0)
         subtotal = unit_price * qty
         total += subtotal
-        rows.append({"item": item, "qty": qty, "subtotal": subtotal, "unit_price": unit_price})
-        lines.append(f"• {item['name']} x{qty} - ₦{subtotal:,} (₦{unit_price:,} each)")
+        note = cart_notes.get(item_id, "")
+        rows.append({"item": item, "qty": qty, "subtotal": subtotal, "unit_price": unit_price, "note": note})
+        safe_item_name = html.escape(str(item["name"] or ""), quote=False)
+        lines.append(f"• {safe_item_name} x{qty} - ₦{subtotal:,} (₦{unit_price:,} each)")
+        if note:
+            lines.append(f"  📝 Note: {html.escape(note, quote=False)}")
     return lines, total, rows
 
 
@@ -2006,18 +2039,22 @@ async def _finalize_order_checkout(update: Update, context: ContextTypes.DEFAULT
         "from_cart": bool(draft.get("from_cart", False)),
     }
 
+    checkout_text = format_checkout_payment_choice(
+        order_ref=order_ref,
+        vendor_name=vendor_name,
+        item_name=item_name,
+        hall_name=hall_name,
+        room_number=room_number,
+        amount=amount,
+        wallet_balance=wallet_balance,
+        subtotal=subtotal,
+        service_fee=settings.service_fee_total,
+    )
+    if draft.get("order_details"):
+        checkout_text += f"\n\n🧾 <b>Cart Details:</b>\n{draft['order_details']}"
+
     await update.effective_message.reply_text(
-        format_checkout_payment_choice(
-            order_ref=order_ref,
-            vendor_name=vendor_name,
-            item_name=item_name,
-            hall_name=hall_name,
-            room_number=room_number,
-            amount=amount,
-            wallet_balance=wallet_balance,
-            subtotal=subtotal,
-            service_fee=settings.service_fee_total,
-        ),
+        checkout_text,
         parse_mode="HTML",
         reply_markup=payment_method_keyboard(order_ref, wallet_balance, amount),
     )
@@ -2110,6 +2147,8 @@ async def checkout_payment_callback(update: Update, context: ContextTypes.DEFAUL
         context.user_data.pop("pending_checkout", None)
         if pending.get("from_cart"):
             context.user_data.pop("cart", None)
+            context.user_data.pop("cart_notes", None)
+            context.user_data.pop("cart_note_mode", None)
         await _edit_or_send_callback_message(
             query,
             "✅ <b>Wallet Payment Successful</b>\n\nYour wallet has been debited and your order is now being dispatched to available waiters.",
@@ -2166,6 +2205,8 @@ async def checkout_payment_callback(update: Update, context: ContextTypes.DEFAUL
         context.user_data.pop("pending_checkout", None)
         if pending.get("from_cart"):
             context.user_data.pop("cart", None)
+            context.user_data.pop("cart_notes", None)
+            context.user_data.pop("cart_note_mode", None)
 
         order_payment_text = format_order_payment_ready(
             order_ref=requested_order_ref,
@@ -3014,6 +3055,8 @@ async def cart_action_callback(update: Update, context: ContextTypes.DEFAULT_TYP
 
     if action == "clear":
         context.user_data.pop("cart", None)
+        context.user_data.pop("cart_notes", None)
+        context.user_data.pop("cart_note_mode", None)
         await _edit_or_send_callback_message(
             query,
             format_empty_cart(),
@@ -3143,6 +3186,7 @@ async def cart_adjust_quantity_callback(update: Update, context: ContextTypes.DE
         return
 
     cart = _get_cart(context)
+    cart_notes = _get_cart_notes(context)
     current_quantity = int(cart.get(item_id, 0))
     if direction == "inc":
         cart[item_id] = current_quantity + 1
@@ -3150,9 +3194,14 @@ async def cart_adjust_quantity_callback(update: Update, context: ContextTypes.DE
         new_quantity = current_quantity - 1
         if new_quantity <= 0:
             cart.pop(item_id, None)
+            cart_notes.pop(item_id, None)
         else:
             cart[item_id] = new_quantity
     context.user_data["cart"] = cart
+    context.user_data["cart_notes"] = cart_notes
+
+    if context.user_data.get("cart_note_mode", {}).get("item_id") == item_id and item_id not in cart:
+        context.user_data.pop("cart_note_mode", None)
 
     lines, total, _ = _cart_lines_and_total(context)
     if not lines:
@@ -3750,6 +3799,9 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     if context.user_data.get("prime_mode"):
         await prime_chat_router(update, context)
+        return
+    if context.user_data.get("cart_note_mode"):
+        await cart_note_step(update, context)
         return
     if context.user_data.get("cart_room_mode"):
         await order_room_step(update, context)
@@ -4639,11 +4691,53 @@ async def catalog_add_current_callback(update: Update, context: ContextTypes.DEF
         await query.answer("Select an item first.", show_alert=True)
         return
 
+    action = query.data.split(":", 1)[1] if ":" in query.data else "add_current"
+    if action == "add_current":
+        item_name = html.escape(str(selection.get("item_name") or "this item"), quote=False)
+        quantity = max(1, int(selection.get("quantity") or 1))
+        await _edit_or_send_callback_message(
+            query,
+            (
+                f"Do you want to add a note for {quantity} x {item_name}?\n"
+                "E.g. deliver to roommate in Room E302 if I am not around."
+            ),
+            parse_mode="HTML",
+            reply_markup=_catalog_note_choice_keyboard(),
+        )
+        return
+
     item_id = int(selection["item_id"])
     quantity = max(1, int(selection.get("quantity") or 1))
+    cart_notes = _get_cart_notes(context)
+
+    if action == "add_with_note":
+        context.user_data["cart_note_mode"] = {
+            "item_id": item_id,
+            "quantity": quantity,
+            "vendor_id": int(selection.get("vendor_id") or 0),
+            "item_name": str(selection.get("item_name") or "Item"),
+        }
+        await _edit_or_send_callback_message(
+            query,
+            "📝 Send the note for this item now. It will show in cart, checkout, and waiter order alerts.",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(
+                [
+                    [InlineKeyboardButton("➕ Add without Note", callback_data="catalog:add_without_note")],
+                    [InlineKeyboardButton("⬅️ Back to Products", callback_data="catalog:back_items")],
+                ]
+            ),
+        )
+        return
+
+    if action == "add_without_note":
+        context.user_data.pop("cart_note_mode", None)
+        cart_notes.pop(item_id, None)
+
     cart = _get_cart(context)
     cart[item_id] = cart.get(item_id, 0) + quantity
     context.user_data["cart"] = cart
+    context.user_data["cart_notes"] = cart_notes
 
     vendor_id = selection.get("vendor_id")
     if vendor_id:
@@ -4662,6 +4756,61 @@ async def catalog_add_current_callback(update: Update, context: ContextTypes.DEF
         "Item added to cart.",
         parse_mode="HTML",
         reply_markup=cart_actions_keyboard(),
+    )
+
+
+async def cart_note_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    mode = context.user_data.get("cart_note_mode")
+    if not isinstance(mode, dict):
+        return
+
+    note_text = " ".join((update.effective_message.text or "").strip().split())
+    if not note_text:
+        await update.effective_message.reply_text("Please send a short note for this item.")
+        return
+    if len(note_text) > 240:
+        await update.effective_message.reply_text("Note is too long. Keep it under 240 characters.")
+        return
+
+    item_id = int(mode.get("item_id") or 0)
+    quantity = max(1, int(mode.get("quantity") or 1))
+    vendor_id = int(mode.get("vendor_id") or 0)
+    item_name = html.escape(str(mode.get("item_name") or "Item"), quote=False)
+    if item_id <= 0:
+        context.user_data.pop("cart_note_mode", None)
+        await update.effective_message.reply_text("Unable to add note right now. Please select the item again.")
+        return
+
+    cart = _get_cart(context)
+    cart[item_id] = int(cart.get(item_id, 0)) + quantity
+    context.user_data["cart"] = cart
+
+    cart_notes = _get_cart_notes(context)
+    cart_notes[item_id] = note_text
+    context.user_data["cart_notes"] = cart_notes
+    context.user_data.pop("cart_note_mode", None)
+
+    await update.effective_message.reply_text(
+        f"✅ Added {quantity} x {item_name} with note to your cart.",
+        parse_mode="HTML",
+    )
+
+    if vendor_id:
+        vendor = db.get_vendor(vendor_id)
+        if vendor:
+            items = db.list_menu_items_by_vendor(vendor_id)
+            await update.effective_message.reply_text(
+                format_menu_vendor_caption(vendor["name"]),
+                parse_mode="HTML",
+                reply_markup=vendor_items_keyboard(items, vendor_id),
+            )
+            return
+
+    lines, total, _ = _cart_lines_and_total(context)
+    await update.effective_message.reply_text(
+        format_cart_view(lines, total),
+        parse_mode="HTML",
+        reply_markup=_cart_keyboard(context),
     )
 
 
@@ -5283,7 +5432,7 @@ def main():
     app.add_handler(CallbackQueryHandler(admin_panel_callback, pattern=r"^admin:.*$"))
     app.add_handler(CallbackQueryHandler(order_catalog_navigation_callback, pattern=r"^catalog:(back_vendors|back_items)$"))
     app.add_handler(CallbackQueryHandler(catalog_item_quantity_callback, pattern=r"^catalog:(qty_inc|qty_dec)$"))
-    app.add_handler(CallbackQueryHandler(catalog_add_current_callback, pattern=r"^catalog:add_current$"))
+    app.add_handler(CallbackQueryHandler(catalog_add_current_callback, pattern=r"^catalog:add_(current|with_note|without_note)$"))
     app.add_handler(CallbackQueryHandler(start_recommendation_action_callback, pattern=r"^rec:(add|urgent):\d+$"))
     app.add_handler(CallbackQueryHandler(cart_action_callback, pattern=r"^cart:(view|vendors|clear|checkout)$"))
     app.add_handler(CallbackQueryHandler(cart_hall_callback, pattern=r"^cart:hall:\d+$"))
