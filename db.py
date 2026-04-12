@@ -1790,9 +1790,16 @@ class Database:
                 """
                 UPDATE orders
                 SET waiter_id=?, status='claimed', accepted_at=COALESCE(accepted_at, ?), eta_minutes=?, eta_due_at=?, updated_at=?
-                WHERE id=? AND waiter_id IS NULL AND status='pending_waiter'
+                                WHERE id=?
+                                    AND waiter_id IS NULL
+                                    AND status='pending_waiter'
+                                    AND (
+                                        SELECT COUNT(*)
+                                        FROM orders
+                                        WHERE waiter_id=? AND status='claimed'
+                                    ) < 3
                 """,
-                (waiter_id, now, eta, eta_due, now, order_id),
+                                (waiter_id, now, eta, eta_due, now, order_id, waiter_id),
             )
         if cursor.rowcount == 1:
             self._refresh_orders_users_export()

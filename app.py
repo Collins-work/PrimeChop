@@ -4693,10 +4693,25 @@ async def claim_order_callback(update: Update, context: ContextTypes.DEFAULT_TYP
 
     db.upsert_user(waiter.id, waiter.full_name, role="waiter")
 
+    active_claimed_orders = db.list_waiter_claimed_orders(waiter.id, limit=4)
+    if len(active_claimed_orders) >= 3:
+        await query.answer(
+            "You already have 3 active claimed orders. Complete one before claiming another.",
+            show_alert=True,
+        )
+        return
+
     order_id = int(query.data.split(":")[1])
     claimed = db.claim_order(order_id, waiter.id, settings.default_delivery_eta_minutes)
 
     if not claimed:
+        refreshed_active = db.list_waiter_claimed_orders(waiter.id, limit=4)
+        if len(refreshed_active) >= 3:
+            await query.answer(
+                "You already have 3 active claimed orders. Complete one before claiming another.",
+                show_alert=True,
+            )
+            return
         await query.answer("Order already claimed by another waiter.", show_alert=True)
         return
 
