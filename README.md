@@ -43,7 +43,7 @@ Telegram delivery mode:
 - Webhook mode also needs the PTB webhook dependency, which is installed from `requirements.txt`
 
 Service fee:
-- `SERVICE_FEE_TOTAL=500`
+- `SERVICE_FEE_TOTAL=550`
 - `SERVICE_FEE_SPLIT_MODE=equal` for 250/250
 - `SERVICE_FEE_SPLIT_MODE=waiter300` for waiter 300 / platform 200
 - `START_LOGO=assets/primechop-logo.png` (or an https URL)
@@ -65,11 +65,12 @@ Quick setup:
 1. In Railway, add a `PostgreSQL` service to your project.
 2. Open the Postgres service, copy the connection string.
 3. Connect with any SQL client (DBeaver, TablePlus, psql) and run [schema_postgres.sql](schema_postgres.sql).
-4. Keep your bot running on SQLite until Postgres query integration is completed in code.
+4. Set `DATABASE_URL` in your app service variables to the Railway Postgres connection string.
 
 Important:
-- The current bot runtime uses `sqlite3` directly in [db.py](db.py).
-- `schema_postgres.sql` prepares your production Postgres database now, but app-level Postgres query switching still requires a dedicated code migration step.
+- Runtime reads and writes still use SQLite as the primary store in [db.py](db.py).
+- When `DATABASE_URL` (or `POSTGRES_MIRROR_URL`) is present, waiter requests and orders are mirrored into PostgreSQL on each write.
+- If rows are not appearing in Railway Postgres, verify schema initialization and check app logs for Postgres write warnings.
 
 ### Webhook Mode (Render Web Service)
 
@@ -117,6 +118,10 @@ Admin (secret/super):
   - invite waiter by Telegram user id
   - list waiters
 - `/confirm_order <payment_tx_ref>` (mark a paid order as confirmed and dispatch it)
+- `/broadcast <message>` (send announcement text to all users who have interacted with the bot)
+- Send an image announcement by either:
+  - sending a photo with caption `/broadcast <caption>`
+  - replying to a photo with `/broadcast <caption>`
 
 Never commit `.env` or put secrets directly in the code. Use environment variables or a secret manager for all passwords and API keys.
 

@@ -63,7 +63,10 @@ class Database:
     def __init__(self, path: str, timezone_name: str):
         self.path = path
         self.tz = ZoneInfo(timezone_name)
-        self._postgres_mirror_url = (os.getenv("POSTGRES_MIRROR_URL", "") or "").strip()
+        self._postgres_mirror_url = (
+            (os.getenv("DATABASE_URL", "") or "").strip()
+            or (os.getenv("POSTGRES_MIRROR_URL", "") or "").strip()
+        )
         self._human_exports_enabled = (os.getenv("HUMAN_READABLE_EXPORTS_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"})
         db_path = Path(path).expanduser()
         base_dir = db_path.parent if db_path.parent and str(db_path.parent) not in {"", "."} else Path.cwd()
@@ -114,6 +117,7 @@ class Database:
         self._postgres_execute(
             """
             INSERT INTO waiter_requests (
+                id,
                 user_id,
                 public_user_id,
                 full_name,
@@ -123,9 +127,10 @@ class Database:
                 created_at,
                 updated_at
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (user_id) DO UPDATE SET
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (id) DO UPDATE SET
                 public_user_id=EXCLUDED.public_user_id,
+                user_id=EXCLUDED.user_id,
                 full_name=EXCLUDED.full_name,
                 details=EXCLUDED.details,
                 status=EXCLUDED.status,
@@ -133,6 +138,7 @@ class Database:
                 updated_at=EXCLUDED.updated_at
             """,
             (
+                int(row["id"]),
                 int(row["user_id"]),
                 row["public_user_id"],
                 row["full_name"],
@@ -1128,6 +1134,13 @@ class Database:
         with self.connection() as conn:
             return conn.execute("SELECT * FROM users WHERE user_id=?", (user_id,)).fetchone()
 
+    def list_user_ids(self) -> list[int]:
+        with self.connection() as conn:
+            rows = conn.execute(
+                "SELECT user_id FROM users ORDER BY user_id ASC"
+            ).fetchall()
+        return [int(row["user_id"]) for row in rows]
+
     def get_user_by_waiter_code(self, waiter_code: str) -> Optional[sqlite3.Row]:
         with self.connection() as conn:
             return conn.execute(
@@ -1648,7 +1661,7 @@ class Database:
         with self.connection() as conn:
             rows = conn.execute(
                 """
-                SELECT amount, status, payment_method, created_at, cafeteria_name
+                SELECT amount, service_fee_total, waiter_share, platform_share, status, payment_method, created_at, cafeteria_name
                 FROM orders
                 ORDER BY id ASC
                 """
@@ -1656,10 +1669,14 @@ class Database:
 
         now = datetime.now(self.tz)
         total_orders = len(rows)
+        paid_statuses = {"pending_waiter", "claimed", "completed", "delivered"}
         delivered_statuses = {"completed", "delivered"}
         cancelled_statuses = {"cancelled", "canceled"}
 
         total_revenue = 0
+        total_service_fees = 0
+        platform_revenue = 0
+        paid_orders = 0
         delivered_orders = 0
         cancelled_orders = 0
         today_orders = 0
@@ -1686,12 +1703,17 @@ class Database:
                 if (now - created_dt.astimezone(self.tz)).days < 7:
                     week_orders += 1
 
-            if status in delivered_statuses:
-                delivered_orders += 1
+            if status in paid_statuses:
+                paid_orders += 1
                 total_revenue += amount
+                total_service_fees += int(row["service_fee_total"] or 0)
+                platform_revenue += int(row["platform_share"] or 0)
                 payment_totals[payment_method] += 1
                 vendor_name = (row["cafeteria_name"] or "Unknown vendor").strip() or "Unknown vendor"
                 vendor_totals[vendor_name] += amount
+
+            if status in delivered_statuses:
+                delivered_orders += 1
             elif status in cancelled_statuses:
                 cancelled_orders += 1
 
@@ -1704,7 +1726,10 @@ class Database:
         return {
             "total_orders": total_orders,
             "total_revenue": total_revenue,
-            "avg_order_value": (total_revenue / delivered_orders) if delivered_orders else 0,
+            "total_service_fees": total_service_fees,
+            "platform_revenue": platform_revenue,
+            "paid_orders": paid_orders,
+            "avg_order_value": (total_revenue / paid_orders) if paid_orders else 0,
             "today_orders": today_orders,
             "week_orders": week_orders,
             "delivered_orders": delivered_orders,

@@ -471,6 +471,34 @@ async def _safe_send_message(
         return False
 
 
+async def _safe_send_photo(
+    bot,
+    *,
+    chat_id: int,
+    photo,
+    caption: str | None = None,
+    parse_mode: str | None = None,
+    log_context: str = "send_photo",
+) -> bool:
+    try:
+        await bot.send_photo(
+            chat_id=chat_id,
+            photo=photo,
+            caption=caption,
+            parse_mode=parse_mode,
+        )
+        return True
+    except (BadRequest, Forbidden) as exc:
+        if _is_unreachable_chat_error(exc):
+            logger.warning("Skipped %s to chat %s: %s", log_context, chat_id, exc)
+            return False
+        logger.exception("Failed %s to chat %s", log_context, chat_id)
+        return False
+    except TelegramError:
+        logger.exception("Failed %s to chat %s", log_context, chat_id)
+        return False
+
+
 async def _set_public_bot_commands(application: Application, chat_id: int | None = None) -> None:
     commands = [
         BotCommand("start", "Show welcome message"),
@@ -520,6 +548,7 @@ async def _set_admin_bot_commands(application: Application, chat_id: int) -> Non
             BotCommand("clear_orders", "Admin: clear order history"),
             BotCommand("additem", "Add a new menu item"),
             BotCommand("confirm_topup", "Confirm a top-up payment"),
+            BotCommand("broadcast", "Send text or image announcement"),
             BotCommand("waiter_online", "Set waiter online"),
             BotCommand("waiter_offline", "Set waiter offline"),
             BotCommand("waiter_logout", "Exit waiter mode to customer menu"),
@@ -2434,7 +2463,10 @@ def format_order_analytics_dashboard(report: dict) -> str:
 
     lines = ["📈 <b>Order Analytics</b>", "", "📁 <b>Overview:</b>"]
     lines.append(f"Total Orders: {int(report.get('total_orders', 0))}")
+    lines.append(f"Paid Orders: {int(report.get('paid_orders', 0))}")
     lines.append(f"Total Revenue: ₦{float(report.get('total_revenue', 0)):,.2f}")
+    lines.append(f"Service Fees Collected: ₦{float(report.get('total_service_fees', 0)):,.2f}")
+    lines.append(f"Platform Revenue: ₦{float(report.get('platform_revenue', 0)):,.2f}")
     lines.append(f"Avg Order Value: ₦{float(report.get('avg_order_value', 0)):,.2f}")
     lines.extend(["", "📅 <b>Time-based:</b>"])
     lines.append(f"Today: {int(report.get('today_orders', 0))} orders")
@@ -4410,6 +4442,72 @@ async def confirm_topup(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if not is_admin(user.id) and not has_super_admin_access(user.id, context):
+        text = format_unauthorized()
+        await update.effective_message.reply_text(text, parse_mode="HTML")
+        return
+
+    message = update.effective_message
+    message_text = " ".join(context.args).strip() if context.args else ""
+
+    photo_to_broadcast = None
+    if message and message.photo:
+        photo_to_broadcast = message.photo[-1].file_id
+    elif message and message.reply_to_message and message.reply_to_message.photo:
+        photo_to_broadcast = message.reply_to_message.photo[-1].file_id
+
+    if not message_text and not photo_to_broadcast:
+        await update.effective_message.reply_text(
+            "Usage:\n"
+            "/broadcast <message>\n"
+            "or send a photo with caption: /broadcast <caption>\n"
+            "or reply to a photo with: /broadcast <caption>\n\n"
+            "Example:\n"
+            "/broadcast PrimeChop one-day event is live today. Free delivery until 6 PM.",
+        )
+        return
+
+    chat_ids = db.list_user_ids()
+    if not chat_ids:
+        await update.effective_message.reply_text("No users found to broadcast to yet.")
+        return
+
+    sent_count = 0
+    failed_count = 0
+    for chat_id in chat_ids:
+        if photo_to_broadcast:
+            sent = await _safe_send_photo(
+                context.bot,
+                chat_id=int(chat_id),
+                photo=photo_to_broadcast,
+                caption=message_text or None,
+                parse_mode="HTML" if message_text else None,
+                log_context="broadcast_photo",
+            )
+        else:
+            sent = await _safe_send_message(
+                context.bot,
+                chat_id=int(chat_id),
+                text=message_text,
+                log_context="broadcast",
+            )
+        if sent:
+            sent_count += 1
+        else:
+            failed_count += 1
+        await asyncio.sleep(0.05)
+
+    await update.effective_message.reply_text(
+        (
+            "Broadcast complete.\n"
+            f"Delivered: {sent_count}\n"
+            f"Skipped/failed: {failed_count}"
+        )
+    )
+
+
 async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     vendors = _get_order_vendor_rows()
     if not vendors:
@@ -5165,6 +5263,7 @@ def main():
     app.add_handler(CommandHandler("wallet", wallet))
     app.add_handler(CommandHandler("topup", topup))
     app.add_handler(CommandHandler("confirm_topup", confirm_topup))
+    app.add_handler(CommandHandler("broadcast", broadcast))
     app.add_handler(CommandHandler("confirm_order", confirm_order_payment))
     app.add_handler(CommandHandler("view_orders", view_orders))
     app.add_handler(CommandHandler("waiters", waiters_db))
