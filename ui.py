@@ -262,30 +262,16 @@ def format_start_message(
     recommendations,
     user_name: str = "",
 ) -> str:
-    """Format a compact personalized welcome and meal recommendation message."""
-    first_name = user_name.split()[0] if user_name else "there"
-    lines = [
-        f"👋 <b>Welcome, {first_name}</b>",
-        f"Here are your {period_label.lower()} picks from <b>{cafeteria_name}</b>.",
-        "",
-        "<b>Recommended for you</b>",
-    ]
-
-    if recommendations:
-        for index, recommendation in enumerate(recommendations[:3], start=1):
-            lines.append(
-                f"{index}. <b>{recommendation['name']}</b> - {recommendation['vendor_name']} - ₦{recommendation['price']:,}"
-            )
-    else:
-        lines.append("No personal picks yet. Place an order to train your recommendations.")
-
-    lines.extend(
-        [
-            "",
-            "Tap a quick action below to add a meal or checkout.",
-        ]
+    """Format the default fancy welcome message shown on /start."""
+    return (
+        "✨ <b>Welcome to PrimeChop!</b> ✨\n\n"
+        "<i>Hungry?\n"
+        "Curious?\n"
+        "Or just exploring?</i>\n\n"
+        "You have stepped into a kitchen where orders fly fast and service is always sharp. 🍴\n\n"
+        "<b>Type your first request and let's get cooking</b>"
+        " - your table is already reserved."
     )
-    return "\n".join(lines)
 
 
 def format_help_message() -> str:
