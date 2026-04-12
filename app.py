@@ -114,7 +114,6 @@ from ui import (
     order_post_actions_keyboard,
     payment_method_keyboard,
     start_place_order_keyboard,
-    start_recommendation_keyboard,
     prime_keyboard,
     vendor_items_keyboard,
     vendor_selection_keyboard,
@@ -2680,148 +2679,14 @@ def _resolve_logo_source() -> tuple[bool, str]:
     return False, ""
 
 
-def _meal_period_label(now: datetime) -> str:
-    hour = now.hour
-    if 5 <= hour < 11:
-        return "Breakfast"
-    if 11 <= hour < 16:
-        return "Lunch"
-    if 16 <= hour < 22:
-        return "Dinner"
-    return "Late-night bites"
-
-
-def _matches_time_of_day(item_name: str, meal_slot: str, period_label: str) -> bool:
-    normalized_slot = (meal_slot or "").strip().lower()
-    slot_map = {
-        "Breakfast": {"breakfast", "any"},
-        "Lunch": {"lunch", "any"},
-        "Dinner": {"dinner", "any"},
-        "Late-night bites": {"late-night", "any"},
-    }
-    if normalized_slot in slot_map.get(period_label, set()):
-        return True
-
-    name = (item_name or "").lower()
-    keyword_groups = {
-        "Breakfast": ("egg", "bread", "tea", "coffee", "porridge", "oats", "yam", "akara", "moi moi", "sandwich"),
-        "Lunch": ("rice", "jollof", "fried rice", "pasta", "spaghetti", "beans", "soup", "plantain", "chicken", "beef", "fish"),
-        "Dinner": ("noodles", "shawarma", "burger", "pizza", "salad", "snack", "chicken", "soup", "rice"),
-        "Late-night bites": ("noodles", "snack", "burger", "shawarma", "pizza", "tea", "sandwich"),
-    }
-    return any(keyword in name for keyword in keyword_groups.get(period_label, ()))
-
-
-def _build_start_recommendations(user_id: int, rotation_index: int = 0) -> tuple[str, list[dict]]:
-    now = datetime.now(db.tz)
-    period_label = _meal_period_label(now)
-    day_label = now.strftime("%A")
-    active_items = db.list_menu_items_with_vendor()
-    if not active_items:
-        return period_label, []
-
-    top_pick_rows = db.list_customer_top_picks(user_id, limit=8)
-    trending_rows = db.list_trending_menu_items(limit=8)
-    top_pick_map = {int(row["item_id"]): row for row in top_pick_rows}
-    trending_map = {int(row["item_id"]): row for row in trending_rows}
-    scored_items = []
-    for item in active_items:
-        item_id = int(item["id"])
-        item_name = item["name"] or f"Item #{item_id}"
-        vendor_name = item["vendor_name"] or "Unknown vendor"
-        price = int(item["price"] or 0)
-        meal_slot = (item["meal_slot"] or "any") if "meal_slot" in item.keys() else "any"
-
-        score = 0
-        reasons = []
-
-        top_pick = top_pick_map.get(item_id)
-        if top_pick:
-            order_count = int(top_pick["order_count"] or 0)
-            score += 20 + (order_count * 3)
-            reasons.append(f"one of your top picks ({order_count} order{'s' if order_count != 1 else ''})")
-
-        trending = trending_map.get(item_id)
-        if trending:
-            trend_count = int(trending["order_count"] or 0)
-            score += 12 + trend_count
-            reasons.append(f"popular with students ({trend_count} recent order{'s' if trend_count != 1 else ''})")
-
-        if _matches_time_of_day(item_name, meal_slot, period_label):
-            score += 10
-            reasons.append(f"fits {period_label.lower()} ({meal_slot})")
-
-        if not reasons:
-            reasons.append(f"fresh pick for {day_label}")
-
-        scored_items.append(
-            {
-                "id": item_id,
-                "name": item_name,
-                "vendor_name": vendor_name,
-                "price": price,
-                "score": score,
-                "reason": "; ".join(reasons),
-            }
-        )
-
-    ranked_items = sorted(
-        scored_items,
-        key=lambda recommendation: (-recommendation["score"], recommendation["name"].lower(), recommendation["id"]),
-    )
-
-    recommendation_window = ranked_items[: min(8, len(ranked_items))]
-    if len(recommendation_window) <= 3:
-        recommendations = recommendation_window
-    else:
-        start_index = rotation_index % len(recommendation_window)
-        recommendations = [
-            recommendation_window[(start_index + offset) % len(recommendation_window)]
-            for offset in range(3)
-        ]
-
-    return period_label, recommendations
-
-
-def _build_public_recommendation_description() -> str:
-    now = datetime.now(db.tz)
-    period_label = _meal_period_label(now)
-    trending_rows = db.list_trending_menu_items(limit=3)
-
-    if not trending_rows:
-        return (
-            f"🍽️ PrimeChop - {period_label} Meal Radar\n"
-            "Today's picks are loading from campus kitchens.\n"
-            "Use /start for personalized recommendations and urgent checkout."
-        )
-
-    picks = []
-    for row in trending_rows[:2]:
-        item_name = row["name"] or "Popular meal"
-        vendor_name = row["vendor_name"] or settings.cafeteria_name
-        picks.append(f"• {item_name} ({vendor_name})")
-
-    return "\n".join(
-        [
-            f"🍽️ PrimeChop - {period_label} Meal Radar",
-            "Trending picks among students:",
-            *picks,
-            "Use /start for your personal picks + urgent checkout.",
-        ]
-    )
-
-
 async def send_start_banner(update: Update, role: str, context: ContextTypes.DEFAULT_TYPE):
     message = update.effective_message
-    rotation_index = int(context.user_data.get("start_reco_counter", 0))
-    period_label, recommendations = _build_start_recommendations(update.effective_user.id, rotation_index)
     welcome_text = format_start_message(
         settings.cafeteria_name,
-        period_label,
-        recommendations,
+        "Welcome",
+        [],
         update.effective_user.full_name,
     )
-    recommendation_keyboard = start_recommendation_keyboard(recommendations)
     has_logo, logo_source = _resolve_logo_source()
     sent_banner = False
 
@@ -2830,7 +2695,7 @@ async def send_start_banner(update: Update, role: str, context: ContextTypes.DEF
             if logo_source.startswith("http://") or logo_source.startswith("https://"):
                 await message.reply_photo(
                     photo=logo_source,
-                    caption=format_start_banner_caption(settings.cafeteria_name, period_label),
+                    caption=format_start_banner_caption(settings.cafeteria_name, "Welcome"),
                     parse_mode="HTML",
                 )
                 sent_banner = True
@@ -2839,14 +2704,14 @@ async def send_start_banner(update: Update, role: str, context: ContextTypes.DEF
                 with open(logo_source, "rb") as logo_file:
                     await message.reply_photo(
                         photo=logo_file,
-                        caption=format_start_banner_caption(settings.cafeteria_name, period_label),
+                        caption=format_start_banner_caption(settings.cafeteria_name, "Welcome"),
                         parse_mode="HTML",
                     )
                     sent_banner = True
         except Exception:
             logger.exception("Unable to send logo on /start; falling back to text")
 
-    await message.reply_text(welcome_text, parse_mode="HTML", reply_markup=recommendation_keyboard)
+    await message.reply_text(welcome_text, parse_mode="HTML")
 
     await message.reply_text("Choose an option below.", reply_markup=home_keyboard(role))
 
@@ -3012,7 +2877,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     role = user_role(user.id)
     db.upsert_user(user.id, user.full_name, role=role)
     _prime_clear_state(context)
-    context.user_data["start_reco_counter"] = int(context.user_data.get("start_reco_counter", 0)) + 1
     await send_start_banner(update, role, context)
 
 
@@ -3116,56 +2980,6 @@ async def cart_hall_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         query,
         format_room_prompt_with_hall(hall_name),
         parse_mode="HTML",
-    )
-
-
-async def start_recommendation_action_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    parts = query.data.split(":")
-    if len(parts) != 3:
-        await query.answer("Invalid recommendation action.", show_alert=True)
-        return
-
-    action = parts[1]
-    try:
-        item_id = int(parts[2])
-    except ValueError:
-        await query.answer("Invalid menu item.", show_alert=True)
-        return
-
-    item = db.get_menu_item(item_id)
-    if not item or int(item["active"] or 0) != 1:
-        await query.answer("This recommended item is unavailable now.", show_alert=True)
-        return
-
-    cart = _get_cart(context)
-    cart[item_id] = int(cart.get(item_id, 0)) + 1
-    context.user_data["cart"] = cart
-
-    if action == "urgent":
-        cart_draft = _build_cart_checkout_draft(context)
-        if not cart_draft:
-            await query.answer("Unable to start urgent checkout right now.", show_alert=True)
-            return
-        context.user_data["order_draft"] = cart_draft
-        await query.message.reply_text(
-            "Urgent checkout enabled. Item added to cart. Choose your delivery hall to continue.",
-            parse_mode="HTML",
-        )
-        await _send_hall_selection(update, context, from_cart=True)
-        return
-
-    lines, total, _ = _cart_lines_and_total(context)
-    await query.message.reply_text(
-        "🛍️ Added to cart. You can keep shopping or checkout now.",
-        parse_mode="HTML",
-    )
-    await query.message.reply_text(
-        format_cart_view(lines, total),
-        parse_mode="HTML",
-        reply_markup=_cart_keyboard(context),
     )
 
 
@@ -5339,9 +5153,9 @@ def main():
     logger.info("✅ Event loop ready")
 
     async def post_init(application: Application):
-        await application.bot.set_my_description(_build_public_recommendation_description())
+        await application.bot.set_my_description("PrimeChop food ordering and delivery bot.")
         await application.bot.set_my_short_description(
-            "Daily meal radar with fast add-to-cart and urgent checkout."
+            "Fast food ordering and delivery updates."
         )
         await _set_public_bot_commands(application)
 
@@ -5433,7 +5247,6 @@ def main():
     app.add_handler(CallbackQueryHandler(order_catalog_navigation_callback, pattern=r"^catalog:(back_vendors|back_items)$"))
     app.add_handler(CallbackQueryHandler(catalog_item_quantity_callback, pattern=r"^catalog:(qty_inc|qty_dec)$"))
     app.add_handler(CallbackQueryHandler(catalog_add_current_callback, pattern=r"^catalog:add_(current|with_note|without_note)$"))
-    app.add_handler(CallbackQueryHandler(start_recommendation_action_callback, pattern=r"^rec:(add|urgent):\d+$"))
     app.add_handler(CallbackQueryHandler(cart_action_callback, pattern=r"^cart:(view|vendors|clear|checkout)$"))
     app.add_handler(CallbackQueryHandler(cart_hall_callback, pattern=r"^cart:hall:\d+$"))
     app.add_handler(CallbackQueryHandler(cart_adjust_quantity_callback, pattern=r"^cart:(inc|dec):\d+$"))

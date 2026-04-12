@@ -262,15 +262,14 @@ def format_start_message(
     recommendations,
     user_name: str = "",
 ) -> str:
-    """Format the default fancy welcome message shown on /start."""
+    """Format fixed welcome message shown on /start."""
     return (
-        "✨ <b>Welcome to PrimeChop!</b> ✨\n\n"
-        "<i>Hungry?\n"
+        "✨ Welcome to PrimeChop! ✨\n\n"
+        "Hungry?\n"
         "Curious?\n"
-        "Or just exploring?</i>\n\n"
+        "Or just exploring?\n\n"
         "You have stepped into a kitchen where orders fly fast and service is always sharp. 🍴\n\n"
-        "<b>Type your first request and let's get cooking</b>"
-        " - your table is already reserved."
+        "Type your first request and let's get cooking - your table is already reserved."
     )
 
 
