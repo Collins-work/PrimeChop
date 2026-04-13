@@ -101,7 +101,7 @@ CREATE TABLE IF NOT EXISTS orders (
     hall_name TEXT,
     status TEXT NOT NULL DEFAULT 'pending_payment',
     payment_method TEXT NOT NULL DEFAULT 'transfer',
-    payment_provider TEXT NOT NULL DEFAULT 'korapay',
+    payment_provider TEXT NOT NULL DEFAULT 'paystack',
     payment_tx_ref TEXT,
     payment_link TEXT,
     customer_rating INTEGER,

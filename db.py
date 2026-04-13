@@ -605,7 +605,7 @@ class Database:
         if "payment_method" not in columns:
             conn.execute("ALTER TABLE orders ADD COLUMN payment_method TEXT DEFAULT 'transfer'")
         if "payment_provider" not in columns:
-            conn.execute("ALTER TABLE orders ADD COLUMN payment_provider TEXT DEFAULT 'korapay'")
+            conn.execute("ALTER TABLE orders ADD COLUMN payment_provider TEXT DEFAULT 'paystack'")
         if "payment_tx_ref" not in columns:
             conn.execute("ALTER TABLE orders ADD COLUMN payment_tx_ref TEXT")
         if "payment_link" not in columns:
@@ -626,7 +626,9 @@ class Database:
             conn.execute("ALTER TABLE orders ADD COLUMN eta_due_at TEXT")
         conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_order_ref ON orders(order_ref)")
         conn.execute("UPDATE orders SET payment_method='transfer' WHERE payment_method IS NULL OR payment_method=''")
-        conn.execute("UPDATE orders SET payment_provider='korapay' WHERE payment_provider IS NULL OR payment_provider=''")
+        conn.execute("UPDATE orders SET payment_provider='paystack' WHERE payment_provider IS NULL OR payment_provider=''")
+        conn.execute("UPDATE orders SET payment_provider='paystack' WHERE LOWER(payment_provider)='korapay'")
+        conn.execute("UPDATE orders SET payment_method='paystack' WHERE LOWER(payment_method)='korapay'")
 
     def _ensure_vendor_columns(self, conn: sqlite3.Connection):
         conn.execute(
@@ -720,7 +722,7 @@ class Database:
                     hall_name TEXT,
                     status TEXT NOT NULL,
                     payment_method TEXT DEFAULT 'transfer',
-                    payment_provider TEXT DEFAULT 'korapay',
+                    payment_provider TEXT DEFAULT 'paystack',
                     payment_tx_ref TEXT,
                     payment_link TEXT,
                     customer_rating INTEGER,
@@ -1412,7 +1414,7 @@ class Database:
         waiter_share: int,
         platform_share: int,
         payment_method: str = "transfer",
-        payment_provider: str = "korapay",
+        payment_provider: str = "paystack",
         payment_tx_ref: str | None = None,
         payment_link: str | None = None,
     ) -> int:
@@ -1736,7 +1738,7 @@ class Database:
             "cancelled_orders": cancelled_orders,
             "payment_methods": {
                 "wallet": payment_totals.get("wallet", 0),
-                "korapay": payment_totals.get("korapay", 0),
+                "paystack": payment_totals.get("paystack", 0),
                 "transfer": payment_totals.get("transfer", 0),
             },
             "top_vendors": [

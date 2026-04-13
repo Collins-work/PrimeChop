@@ -5,12 +5,12 @@ import aiohttp
 
 
 @dataclass
-class KoraPaymentResult:
+class PaystackPaymentResult:
     tx_ref: str
     checkout_url: str
 
 
-class KoraPayClient:
+class PaystackClient:
     def __init__(
         self,
         mode: str,
@@ -26,7 +26,7 @@ class KoraPayClient:
         self.initialize_url = initialize_url
 
     def provider_name(self) -> str:
-        return "korapay"
+        return "paystack"
 
     async def initialize_payment(
         self,
@@ -35,31 +35,31 @@ class KoraPayClient:
         full_name: str,
         reference_prefix: str,
         user_id: int,
-    ) -> KoraPaymentResult:
+    ) -> PaystackPaymentResult:
         tx_ref = f"{reference_prefix}_{user_id}_{uuid.uuid4().hex[:12]}"
         if self.mode == "mock":
-            return KoraPaymentResult(
+            return PaystackPaymentResult(
                 tx_ref=tx_ref,
-                checkout_url=f"https://checkout.mock.korapay.test/pay/{tx_ref}",
+                checkout_url=f"https://checkout.mock.paystack.test/pay/{tx_ref}",
             )
 
         missing_fields = []
         if not self.secret_key:
-            missing_fields.append("KORAPAY_SECRET_KEY")
+            missing_fields.append("PAYSTACK_SECRET_KEY")
         if not self.callback_url:
-            missing_fields.append("KORAPAY_CALLBACK_URL")
+            missing_fields.append("PAYSTACK_CALLBACK_URL")
         if missing_fields:
             missing_csv = ", ".join(missing_fields)
-            raise RuntimeError(f"KoraPay live mode is missing required settings: {missing_csv}")
+            raise RuntimeError(f"Paystack live mode is missing required settings: {missing_csv}")
 
         payload = {
             "amount": amount,
             "currency": self.currency,
             "reference": tx_ref,
-            "redirect_url": self.callback_url,
-            "customer": {
-                "name": full_name,
-                "email": email,
+            "callback_url": self.callback_url,
+            "email": email,
+            "metadata": {
+                "full_name": full_name,
             },
         }
 
@@ -73,9 +73,9 @@ class KoraPayClient:
                 data = await resp.json(content_type=None)
                 if resp.status >= 400:
                     message = data.get("message") if isinstance(data, dict) else str(data)
-                    raise RuntimeError(f"KoraPay initialize failed: {message}")
+                    raise RuntimeError(f"Paystack initialize failed: {message}")
                 checkout_url = self._extract_checkout_url(data)
-                return KoraPaymentResult(tx_ref=tx_ref, checkout_url=checkout_url)
+                return PaystackPaymentResult(tx_ref=tx_ref, checkout_url=checkout_url)
 
     async def initialize_wallet_topup(
         self,
@@ -83,7 +83,7 @@ class KoraPayClient:
         email: str,
         full_name: str,
         user_id: int,
-    ) -> KoraPaymentResult:
+    ) -> PaystackPaymentResult:
         return await self.initialize_payment(
             amount=amount,
             email=email,
@@ -99,7 +99,7 @@ class KoraPayClient:
         full_name: str,
         user_id: int,
         order_ref: str,
-    ) -> KoraPaymentResult:
+    ) -> PaystackPaymentResult:
         return await self.initialize_payment(
             amount=amount,
             email=email,
@@ -110,10 +110,17 @@ class KoraPayClient:
 
     def _extract_checkout_url(self, data: dict) -> str:
         if not isinstance(data, dict):
-            raise RuntimeError("Invalid KoraPay response format")
+            raise RuntimeError("Invalid Paystack response format")
         data_node = data.get("data") or {}
-        for key in ("checkout_url", "checkoutUrl", "payment_url", "paymentUrl"):
+        for key in (
+            "authorization_url",
+            "authorizationUrl",
+            "checkout_url",
+            "checkoutUrl",
+            "payment_url",
+            "paymentUrl",
+        ):
             value = data_node.get(key)
             if value:
                 return str(value)
-        raise RuntimeError("KoraPay response did not include a checkout URL")
+        raise RuntimeError("Paystack response did not include a checkout URL")
