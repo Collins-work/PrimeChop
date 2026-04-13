@@ -2873,6 +2873,7 @@ async def initialize_topup_for_user(
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    _clear_waiter_portal_state(context)
     user = update.effective_user
     role = user_role(user.id)
     db.upsert_user(user.id, user.full_name, role=role)
@@ -2881,16 +2882,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    _clear_waiter_portal_state(context)
     role = user_role(update.effective_user.id)
     text = format_help_message()
     await update.effective_message.reply_text(text, reply_markup=home_keyboard(role), parse_mode="HTML")
 
 
 async def place_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    _clear_waiter_portal_state(context)
     await menu(update, context)
 
 
 async def view_cart(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    _clear_waiter_portal_state(context)
     lines, total, _ = _cart_lines_and_total(context)
     if not lines:
         await update.effective_message.reply_text(format_empty_cart(), parse_mode="HTML", reply_markup=cart_actions_keyboard())
@@ -3036,6 +3040,8 @@ async def cart_adjust_quantity_callback(update: Update, context: ContextTypes.DE
 
 
 async def become_waiter(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data.pop("waiter_register_mode", None)
+    context.user_data.pop("waiter_login_mode", None)
     user = update.effective_user
     if is_waiter(user.id):
         await update.effective_message.reply_text(
@@ -3110,6 +3116,62 @@ async def waiter_register_details_step(update: Update, context: ContextTypes.DEF
 
     if not parsed_details:
         await update.effective_message.reply_text(
+
+
+def _clear_waiter_portal_state(context: ContextTypes.DEFAULT_TYPE):
+    context.user_data.pop("waiter_register_mode", None)
+    context.user_data.pop("waiter_login_mode", None)
+
+
+def _is_waiter_registration_override_text(text: str) -> bool:
+    normalized = (text or "").strip().lower()
+    return normalized in {
+        "start",
+        "/start",
+        BTN_PLACE_ORDER.lower(),
+        "place order",
+        "place an order",
+        "/place_order",
+        BTN_VIEW_CART.lower(),
+        "view cart",
+        "/view_cart",
+        BTN_BECOME_WAITER.lower(),
+        "become waiter",
+        "become a waiter",
+        "/become_waiter",
+        BTN_CUSTOMER_SUPPORT.lower(),
+        "customer support",
+        "/customer_support",
+        BTN_ORDER_HISTORY.lower(),
+        "order history",
+        "/order_history",
+        BTN_TERMS.lower(),
+        "terms",
+        "terms and conditions",
+        "terms & conditions",
+        "/terms",
+        BTN_MENU.lower(),
+        "menu",
+        BTN_WALLET.lower(),
+        "wallet",
+        BTN_TOPUP.lower(),
+        "top up",
+        "topup",
+        "/topup",
+        BTN_HELP.lower(),
+        "help",
+        "/help",
+        BTN_PRIME.lower(),
+        "prime",
+        "prime ai",
+        "talk to prime",
+        "chat with prime",
+        "/prime",
+        BTN_WAITER_ONLINE.lower(),
+        BTN_WAITER_OFFLINE.lower(),
+        BTN_VIEW_ORDERS.lower(),
+        BTN_EXIT_WAITER_MODE.lower(),
+    }
             "Please send your details in the required format:\n"
             "Name: Your Full Name\n"
             "Email: yourname@gmail.com\n"
@@ -3206,6 +3268,62 @@ async def waiter_portal_router(update: Update, context: ContextTypes.DEFAULT_TYP
     if context.user_data.get("waiter_login_mode"):
         await waiter_login_code_step(update, context)
         return
+
+
+def _clear_waiter_portal_state(context: ContextTypes.DEFAULT_TYPE):
+    context.user_data.pop("waiter_register_mode", None)
+    context.user_data.pop("waiter_login_mode", None)
+
+
+def _is_waiter_registration_override_text(text: str) -> bool:
+    normalized = (text or "").strip().lower()
+    return normalized in {
+        "start",
+        "/start",
+        BTN_PLACE_ORDER.lower(),
+        "place order",
+        "place an order",
+        "/place_order",
+        BTN_VIEW_CART.lower(),
+        "view cart",
+        "/view_cart",
+        BTN_BECOME_WAITER.lower(),
+        "become waiter",
+        "become a waiter",
+        "/become_waiter",
+        BTN_CUSTOMER_SUPPORT.lower(),
+        "customer support",
+        "/customer_support",
+        BTN_ORDER_HISTORY.lower(),
+        "order history",
+        "/order_history",
+        BTN_TERMS.lower(),
+        "terms",
+        "terms and conditions",
+        "terms & conditions",
+        "/terms",
+        BTN_MENU.lower(),
+        "menu",
+        BTN_WALLET.lower(),
+        "wallet",
+        BTN_TOPUP.lower(),
+        "top up",
+        "topup",
+        "/topup",
+        BTN_HELP.lower(),
+        "help",
+        "/help",
+        BTN_PRIME.lower(),
+        "prime",
+        "prime ai",
+        "talk to prime",
+        "chat with prime",
+        "/prime",
+        BTN_WAITER_ONLINE.lower(),
+        BTN_WAITER_OFFLINE.lower(),
+        BTN_VIEW_ORDERS.lower(),
+        BTN_EXIT_WAITER_MODE.lower(),
+    }
 
 
 async def admin_secret(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3613,6 +3731,11 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     if context.user_data.get("prime_mode"):
         await prime_chat_router(update, context)
+        return
+    text = (update.effective_message.text or "").strip()
+    if context.user_data.get("waiter_register_mode") and _is_waiter_registration_override_text(text):
+        _clear_waiter_portal_state(context)
+        await home_button_router(update, context)
         return
     if context.user_data.get("cart_note_mode"):
         await cart_note_step(update, context)
@@ -4104,6 +4227,7 @@ async def admin_invite_router(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 
 async def customer_support(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    _clear_waiter_portal_state(context)
     await update.effective_message.reply_text(format_customer_support(), parse_mode="HTML")
 
 
@@ -4175,6 +4299,7 @@ async def order_progress(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def order_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    _clear_waiter_portal_state(context)
     user = update.effective_user
     rows = db.list_customer_orders(user.id, limit=10)
     if not rows:
@@ -4197,6 +4322,7 @@ async def clear_orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def terms(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    _clear_waiter_portal_state(context)
     await update.effective_message.reply_text(format_terms_and_conditions(), parse_mode="HTML")
 
 
@@ -4222,6 +4348,7 @@ async def clear_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def wallet(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    _clear_waiter_portal_state(context)
     user = update.effective_user
     role = user_role(user.id)
     db.upsert_user(user.id, user.full_name, role=role)
@@ -4234,6 +4361,7 @@ async def wallet(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def topup(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    _clear_waiter_portal_state(context)
     user = update.effective_user
     db.upsert_user(user.id, user.full_name, role=user_role(user.id))
 
@@ -4375,6 +4503,7 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    _clear_waiter_portal_state(context)
     vendors = _get_order_vendor_rows()
     if not vendors:
         await update.effective_message.reply_text(format_menu_empty(), parse_mode="HTML")
