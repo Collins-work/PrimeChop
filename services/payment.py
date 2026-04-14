@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import json
 import uuid
 
 import aiohttp
@@ -70,10 +71,40 @@ class KoraPayClient:
 
         async with aiohttp.ClientSession() as session:
             async with session.post(self.initialize_url, json=payload, headers=headers) as resp:
-                data = await resp.json(content_type=None)
+                raw_body = await resp.text()
+                data = None
+                if raw_body:
+                    try:
+                        data = json.loads(raw_body)
+                    except json.JSONDecodeError:
+                        data = None
+
                 if resp.status >= 400:
-                    message = data.get("message") if isinstance(data, dict) else str(data)
+                    message = ""
+                    if isinstance(data, dict):
+                        message = str(
+                            data.get("message")
+                            or data.get("error")
+                            or data.get("detail")
+                            or ""
+                        ).strip()
+                    if not message:
+                        body_preview = (raw_body or "").strip()
+                        if not body_preview:
+                            body_preview = "empty response body"
+                        body_preview = body_preview.replace("\n", " ")[:240]
+                        message = f"HTTP {resp.status} ({body_preview})"
                     raise RuntimeError(f"Kora Pay initialize failed: {message}")
+
+                if not isinstance(data, dict):
+                    body_preview = (raw_body or "").strip().replace("\n", " ")[:240]
+                    if not body_preview:
+                        body_preview = "empty response body"
+                    raise RuntimeError(
+                        "Kora Pay initialize returned a non-JSON response "
+                        f"(HTTP {resp.status}, {body_preview})"
+                    )
+
                 checkout_url = self._extract_checkout_url(data)
                 return KoraPayPaymentResult(tx_ref=tx_ref, checkout_url=checkout_url)
 
