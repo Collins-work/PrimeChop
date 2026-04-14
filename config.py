@@ -64,6 +64,20 @@ def _parse_bool(raw: str, default: bool = False) -> bool:
     return value in {"1", "true", "yes", "on"}
 
 
+def _strip_wrapping_quotes(raw: str) -> str:
+    value = (raw or "").strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"\"", "'"}:
+        return value[1:-1].strip()
+    return value
+
+
+def _normalize_paystack_key(raw: str) -> str:
+    value = _strip_wrapping_quotes(raw)
+    if value.lower().startswith("bearer "):
+        value = value[7:].strip()
+    return value
+
+
 def _normalize_google_sheet_id(raw: str) -> str:
     value = (raw or "").strip()
     if not value:
@@ -184,19 +198,19 @@ settings = Settings(
         "Hall Lydia",
         "Hall Deborah",
     ],
-    paystack_mode=os.getenv("PAYSTACK_MODE", "mock").strip().lower(),
-    paystack_secret_key=os.getenv("PAYSTACK_SECRET_KEY", "").strip(),
-    paystack_public_key=os.getenv("PAYSTACK_PUBLIC_KEY", "").strip(),
-    paystack_currency=os.getenv("PAYSTACK_CURRENCY", "NGN").strip(),
-    paystack_callback_url=os.getenv("PAYSTACK_CALLBACK_URL", "").strip(),
-    paystack_initialize_url=os.getenv(
+    paystack_mode=_strip_wrapping_quotes(os.getenv("PAYSTACK_MODE", "mock")).lower(),
+    paystack_secret_key=_normalize_paystack_key(os.getenv("PAYSTACK_SECRET_KEY", "")),
+    paystack_public_key=_normalize_paystack_key(os.getenv("PAYSTACK_PUBLIC_KEY", "")),
+    paystack_currency=_strip_wrapping_quotes(os.getenv("PAYSTACK_CURRENCY", "NGN")),
+    paystack_callback_url=_strip_wrapping_quotes(os.getenv("PAYSTACK_CALLBACK_URL", "")),
+    paystack_initialize_url=_strip_wrapping_quotes(os.getenv(
         "PAYSTACK_INITIALIZE_URL",
         "https://api.paystack.co/transaction/initialize",
-    ).strip(),
-    paystack_verify_url=os.getenv(
+    )),
+    paystack_verify_url=_strip_wrapping_quotes(os.getenv(
         "PAYSTACK_VERIFY_URL",
         "https://api.paystack.co/transaction/verify",
-    ).strip(),
+    )),
     paystack_web_host=os.getenv("PAYSTACK_WEB_HOST", "0.0.0.0").strip(),
     paystack_web_port=int(os.getenv("PAYSTACK_WEB_PORT", os.getenv("PORT", "8080"))),
     service_fee_total=int(os.getenv("SERVICE_FEE_TOTAL", "650")),

@@ -128,6 +128,7 @@ logging.basicConfig(
     level=logging.INFO,
 )
 logger = logging.getLogger(__name__)
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 TELEGRAM_TEXT_SOFT_LIMIT = 3800
 ADMIN_CATALOG_PAGE_SIZE = 12

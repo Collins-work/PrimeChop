@@ -87,6 +87,11 @@ class PaystackClient:
 
                 if resp.status >= 400:
                     message = self._response_message(data, raw_body, resp.status)
+                    if "invalid key" in message.lower():
+                        message = (
+                            f"{message}. Confirm PAYSTACK_SECRET_KEY is a raw sk_* key "
+                            "with no surrounding quotes and no 'Bearer ' prefix"
+                        )
                     if request_id:
                         message = f"{message} [request_id={request_id}]"
                     if cf_ray:
