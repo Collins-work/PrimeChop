@@ -35,7 +35,7 @@ from telegram.ext import (
 from config import settings
 from db import Database
 from services.excel_audit import ExcelAuditTrail
-from services.payment import KoraPayClient
+from services.payment import PaystackClient
 from ui import (
     BTN_ADMIN_ADDITEM,
     BTN_BECOME_WAITER,
@@ -118,6 +118,8 @@ from ui import (
     vendor_items_keyboard,
     vendor_selection_keyboard,
     topup_presets_keyboard,
+    delivery_time_selection_keyboard,
+    format_time_prompt,
 )
 
 
@@ -147,13 +149,14 @@ warnings.filterwarnings(
     ORDER_ITEM,
     ORDER_HALL,
     ORDER_ROOM,
+    ORDER_TIME,
     ADMIN_INVITE_USER_ID,
     WAITER_REGISTER_DETAILS,
     WAITER_LOGIN_CODE,
     ADMIN_LOGIN_PASSWORD,
     ADMIN_DEACTIVATE_INPUT,
     TOPUP_AMOUNT,
-) = range(14)
+) = range(15)
 
 
 @dataclass
@@ -948,12 +951,14 @@ if settings.excel_audit_enabled and settings.excel_audit_backend == "google":
     sheet_url = audit_trail.get_google_sheet_url()
     if sheet_url:
         logger.info("Google Sheets audit enabled: %s", sheet_url)
-payments = KoraPayClient(
-    mode=settings.korapay_mode,
-    secret_key=settings.korapay_secret_key,
-    currency=settings.korapay_currency,
-    callback_url=settings.korapay_callback_url,
-    initialize_url=settings.korapay_initialize_url,
+payments = PaystackClient(
+    mode=settings.paystack_mode,
+    secret_key=settings.paystack_secret_key,
+    public_key=settings.paystack_public_key,
+    currency=settings.paystack_currency,
+    callback_url=settings.paystack_callback_url,
+    initialize_url=settings.paystack_initialize_url,
+    verify_url=settings.paystack_verify_url,
 )
 runtime = RuntimeState()
 
@@ -1006,7 +1011,7 @@ def _audit_waiter_remove(user_id: int):
     audit_trail.remove_waiter(user_id)
 
 
-def _extract_korapay_reference(payload: dict, query: dict) -> str:
+def _extract_paystack_reference(payload: dict, query: dict) -> str:
     for source in (payload, query):
         for key in ("reference", "tx_ref", "trx_ref", "transaction_reference", "transactionReference"):
             value = source.get(key)
@@ -1021,7 +1026,7 @@ def _extract_korapay_reference(payload: dict, query: dict) -> str:
     return ""
 
 
-def _is_korapay_success(payload: dict, query: dict) -> bool:
+def _is_paystack_success(payload: dict, query: dict) -> bool:
     status = ""
     for source in (payload, query):
         for key in ("status", "payment_status", "event"):
@@ -1043,20 +1048,11 @@ def _is_korapay_success(payload: dict, query: dict) -> bool:
     return status in {"success", "successful", "completed", "paid", "payment_successful", "charge.success"}
 
 
-def _is_korapay_signature_valid(raw_body: bytes, signature: str) -> bool:
-    if not signature or not settings.korapay_secret_key:
-        return False
-
-    normalized_signature = signature.strip().lower()
-    computed = hmac.new(
-        settings.korapay_secret_key.encode("utf-8"),
-        raw_body,
-        hashlib.sha512,
-    ).hexdigest().lower()
-    return hmac.compare_digest(computed, normalized_signature)
+def _is_paystack_signature_valid(raw_body: bytes, signature: str) -> bool:
+    return payments.is_valid_webhook_signature(raw_body, signature)
 
 
-async def korapay_wallet_callback(request: web.Request) -> web.Response:
+async def paystack_wallet_callback(request: web.Request) -> web.Response:
     payload = {}
     raw_body = b""
     try:
@@ -1070,29 +1066,35 @@ async def korapay_wallet_callback(request: web.Request) -> web.Response:
     except Exception:
         payload = {}
 
-    signature = (
-        request.headers.get("x-korapay-signature")
-        or request.headers.get("x-signature")
-        or ""
-    )
+    signature = request.headers.get("x-paystack-signature") or ""
 
-    if settings.korapay_mode != "mock":
-        # Kora Pay can hit this endpoint in two ways:
+    if settings.paystack_mode != "mock":
+        # Paystack can hit this endpoint in two ways:
         # 1) signed webhook event with request body
         # 2) user redirect back with GET query parameters
         if raw_body:
-            if not _is_korapay_signature_valid(raw_body, signature):
-                logger.warning("Rejected Kora Pay callback due to invalid signature")
+            if not _is_paystack_signature_valid(raw_body, signature):
+                logger.warning("Rejected Paystack callback due to invalid signature")
                 return web.Response(text="Invalid callback signature", status=401)
         elif request.method.upper() != "GET":
             return web.Response(text="Invalid callback body", status=400)
 
     query = dict(request.query)
-    reference = _extract_korapay_reference(payload if isinstance(payload, dict) else {}, query)
+    reference = _extract_paystack_reference(payload if isinstance(payload, dict) else {}, query)
     if not reference:
         return web.Response(text="Missing payment reference", status=400)
 
-    if not _is_korapay_success(payload if isinstance(payload, dict) else {}, query):
+    is_webhook_success = _is_paystack_success(payload if isinstance(payload, dict) else {}, query)
+    if request.method.upper() == "GET" and not is_webhook_success:
+        try:
+            verification = await payments.verify_payment(reference)
+        except Exception:
+            logger.exception("Paystack verification failed for %s", reference)
+            return web.Response(text="Unable to verify payment right now", status=502)
+        if not _is_paystack_success(verification if isinstance(verification, dict) else {}, {}):
+            return web.Response(text="Payment callback received", status=202)
+        payload = verification if isinstance(verification, dict) else {}
+    elif not is_webhook_success:
         return web.Response(text="Payment callback received", status=202)
 
     tx = db.mark_wallet_tx_success(reference)
@@ -1121,24 +1123,24 @@ async def korapay_wallet_callback(request: web.Request) -> web.Response:
     return web.Response(text="Payment already processed or not found", status=200)
 
 
-def start_korapay_callback_server():
+def start_paystack_callback_server():
     if settings.webhook_enabled:
         logger.warning(
-            "Skipping dedicated Kora Pay callback server because WEBHOOK_ENABLED=true. "
-            "Kora Pay callback URL will not be served by this process in webhook mode unless you expose "
-            "/korapay/callback separately."
+            "Skipping dedicated Paystack callback server because WEBHOOK_ENABLED=true. "
+            "Paystack callback URL will not be served by this process in webhook mode unless you expose "
+            "/paystack/callback separately."
         )
         return
-    if not settings.korapay_callback_url:
+    if not settings.paystack_callback_url:
         return
 
     async def _run_server():
         app = web.Application()
-        app.router.add_get("/korapay/callback", korapay_wallet_callback)
-        app.router.add_post("/korapay/callback", korapay_wallet_callback)
+        app.router.add_get("/paystack/callback", paystack_wallet_callback)
+        app.router.add_post("/paystack/callback", paystack_wallet_callback)
         runner = web.AppRunner(app)
         await runner.setup()
-        site = web.TCPSite(runner, settings.korapay_web_host, settings.korapay_web_port)
+        site = web.TCPSite(runner, settings.paystack_web_host, settings.paystack_web_port)
         await site.start()
 
         while True:
@@ -1633,7 +1635,7 @@ async def notify_admins_mock_payment_request(
     user_id: int,
     order_ref: str = "",
 ):
-    if settings.korapay_mode != "mock" or not settings.admin_ids:
+    if settings.paystack_mode != "mock" or not settings.admin_ids:
         return
 
     confirm_label = "✅ Confirm Top-Up (Admin)" if payment_kind == "topup" else "✅ Confirm Payment (Admin)"
@@ -1948,7 +1950,7 @@ def _cart_vendor_name(item) -> str:
 
 
 def _checkout_customer_email(user) -> str:
-    # Kora Pay rejects local-only email domains like .local in live mode.
+    # Paystack rejects local-only email domains like .local in live mode.
     return f"user{user.id}@primechop.app"
 
 
@@ -2018,6 +2020,7 @@ async def _finalize_order_checkout(update: Update, context: ContextTypes.DEFAULT
     item_name = draft["item_name"]
     hall_name = draft["hall_name"]
     room_number = draft["room_number"]
+    delivery_time = draft.get("delivery_time", "")
     subtotal = int(draft["amount"])
     amount = subtotal + settings.service_fee_total
     user_row = db.get_user(user.id)
@@ -2029,6 +2032,7 @@ async def _finalize_order_checkout(update: Update, context: ContextTypes.DEFAULT
         "item_name": item_name,
         "hall_name": hall_name,
         "room_number": room_number,
+        "delivery_time": delivery_time,
         "amount": amount,
         "subtotal": subtotal,
         "service_fee": settings.service_fee_total,
@@ -2047,6 +2051,7 @@ async def _finalize_order_checkout(update: Update, context: ContextTypes.DEFAULT
         wallet_balance=wallet_balance,
         subtotal=subtotal,
         service_fee=settings.service_fee_total,
+        delivery_time=delivery_time,
     )
     if draft.get("order_details"):
         checkout_text += f"\n\n🧾 <b>Cart Details:</b>\n{draft['order_details']}"
@@ -2122,7 +2127,7 @@ async def checkout_payment_callback(update: Update, context: ContextTypes.DEFAUL
             amount=amount,
             order_details=pending.get("order_details", ""),
             room_number=pending["room_number"],
-            delivery_time="",
+            delivery_time=pending.get("delivery_time", ""),
             hall_name=pending["hall_name"],
             service_fee_total=settings.service_fee_total,
             waiter_share=waiter_share,
@@ -2155,7 +2160,7 @@ async def checkout_payment_callback(update: Update, context: ContextTypes.DEFAUL
         await _dispatch_paid_order(order, context)
         return
 
-    if action == "korapay":
+    if action == "paystack":
         amount = int(pending["amount"])
         try:
             payment_result = await payments.initialize_order_checkout(
@@ -2167,9 +2172,9 @@ async def checkout_payment_callback(update: Update, context: ContextTypes.DEFAUL
             )
         except Exception as exc:
             logger.error(
-                f"Order payment initialization failed. Mode: {settings.korapay_mode}, "
-                f"Secret key set: {bool(settings.korapay_secret_key)}, "
-                f"Callback URL set: {bool(settings.korapay_callback_url)}. Error: {exc}",
+                f"Order payment initialization failed. Mode: {settings.paystack_mode}, "
+                f"Secret key set: {bool(settings.paystack_secret_key)}, "
+                f"Callback URL set: {bool(settings.paystack_callback_url)}. Error: {exc}",
                 exc_info=True,
             )
             await _edit_or_send_callback_message(
@@ -2188,7 +2193,7 @@ async def checkout_payment_callback(update: Update, context: ContextTypes.DEFAUL
             amount=amount,
             order_details=pending.get("order_details", ""),
             room_number=pending["room_number"],
-            delivery_time="",
+            delivery_time=pending.get("delivery_time", ""),
             hall_name=pending["hall_name"],
             status="pending_payment",
             payment_method=payments.provider_name(),
@@ -2221,10 +2226,10 @@ async def checkout_payment_callback(update: Update, context: ContextTypes.DEFAUL
             payment_url=payment_result.checkout_url,
             tx_ref=payment_result.tx_ref,
             payment_kind="order",
-            label="💳 Pay with Kora Pay",
+            label="💳 Pay with Paystack",
         )
 
-        if settings.korapay_mode == "mock":
+        if settings.paystack_mode == "mock":
             order_payment_text += "\n\nℹ️ <b>Mock mode:</b> admin has been notified to confirm this payment."
 
         await _edit_or_send_callback_message(
@@ -2234,7 +2239,7 @@ async def checkout_payment_callback(update: Update, context: ContextTypes.DEFAUL
             reply_markup=order_payment_markup,
         )
 
-        if settings.korapay_mode == "mock":
+        if settings.paystack_mode == "mock":
             await notify_admins_mock_payment_request(
                 context=context,
                 payment_kind="order",
@@ -2335,7 +2340,7 @@ async def mock_payment_confirm_callback(update: Update, context: ContextTypes.DE
         await query.answer("Only admin can confirm this payment.", show_alert=True)
         return
 
-    if settings.korapay_mode != "mock":
+    if settings.paystack_mode != "mock":
         await query.answer("Mock confirmation is disabled in live mode.", show_alert=True)
         return
 
@@ -2853,7 +2858,7 @@ async def initialize_topup_for_user(
         status="pending",
     )
 
-    text = format_topup_created(amount, result.tx_ref, settings.korapay_mode)
+    text = format_topup_created(amount, result.tx_ref, settings.paystack_mode)
     reply_markup = mock_payment_actions_keyboard(
         payment_url=result.checkout_url,
         tx_ref=result.tx_ref,
@@ -2861,7 +2866,7 @@ async def initialize_topup_for_user(
     )
     await context.bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup, parse_mode="HTML")
 
-    if settings.korapay_mode == "mock":
+    if settings.paystack_mode == "mock":
         await notify_admins_mock_payment_request(
             context=context,
             payment_kind="topup",
@@ -4708,6 +4713,35 @@ async def order_room_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
     draft["room_number"] = room_number
     context.user_data["order_draft"] = draft
     context.user_data.pop("cart_room_mode", None)
+    
+    # Prompt for delivery time
+    await update.effective_message.reply_text(
+        format_time_prompt(draft.get("hall_name", "your location")),
+        parse_mode="HTML",
+        reply_markup=delivery_time_selection_keyboard(),
+    )
+    return ORDER_TIME
+
+
+async def order_time_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle delivery time selection."""
+    query = update.callback_query
+    await query.answer()
+
+    draft = context.user_data.get("order_draft", {})
+    if not draft:
+        await query.edit_message_text("Order session expired. Please place the order again.")
+        return ConversationHandler.END
+
+    data_parts = query.data.split(":")
+    if len(data_parts) != 4 or data_parts[0] != "order" or data_parts[1] != "time":
+        await query.answer("Invalid time selection.", show_alert=True)
+        return ORDER_TIME
+
+    delivery_time = f"{data_parts[2]}:{data_parts[3]}"
+    draft["delivery_time"] = delivery_time
+    context.user_data["order_draft"] = draft
+
     await _finalize_order_checkout(update, context)
 
 
@@ -5155,7 +5189,7 @@ def main_with_retry():
 
 def main():
     logger.info("🚀 Starting PrimeChop bot...")
-    logger.info(f"Configuration: WEBHOOK_ENABLED={settings.webhook_enabled}, LIGHTWEIGHT_MODE={settings.lightweight_mode}, KORAPAY_MODE={settings.korapay_mode}")
+    logger.info(f"Configuration: WEBHOOK_ENABLED={settings.webhook_enabled}, LIGHTWEIGHT_MODE={settings.lightweight_mode}, PAYSTACK_MODE={settings.paystack_mode}")
     logger.info("Database backend: PostgreSQL")
     
     logger.info("Initializing database...")
@@ -5179,9 +5213,9 @@ def main():
     else:
         logger.info(f"✅ Menu already has {vendor_count} vendors, skipping bootstrap")
     
-    logger.info("Setting up Kora Pay callback server...")
-    start_korapay_callback_server()
-    logger.info("✅ Kora Pay setup complete")
+    logger.info("Setting up Paystack callback server...")
+    start_paystack_callback_server()
+    logger.info("✅ Paystack setup complete")
     
     logger.info("Setting up asyncio event loop...")
     asyncio.set_event_loop(asyncio.new_event_loop())
@@ -5239,6 +5273,7 @@ def main():
             ORDER_ITEM: [CallbackQueryHandler(order_item_callback, pattern=r"^catalog:item:\d+$")],
             ORDER_HALL: [CallbackQueryHandler(order_hall_callback, pattern=r"^catalog:hall:\d+$")],
             ORDER_ROOM: [MessageHandler(filters.TEXT & ~filters.COMMAND, order_room_step)],
+            ORDER_TIME: [CallbackQueryHandler(order_time_step, pattern=r"^order:time:[\d:]+-[\d:]+$")],
         },
         fallbacks=[CommandHandler("cancel", order_flow_cancel)],
         per_chat=True,
@@ -5293,7 +5328,7 @@ def main():
     app.add_handler(CallbackQueryHandler(mock_payment_confirm_callback, pattern=r"^payconfirm:(topup|order):[A-Za-z0-9_]+$"))
     app.add_handler(CallbackQueryHandler(topup_preset_callback, pattern=r"^topup:\d+$"))
     app.add_handler(CallbackQueryHandler(topup_action_callback, pattern=r"^topup:(start|custom)$"))
-    app.add_handler(CallbackQueryHandler(checkout_payment_callback, pattern=r"^checkout:(wallet|korapay|cancel):[a-z0-9]{7}$"))
+    app.add_handler(CallbackQueryHandler(checkout_payment_callback, pattern=r"^checkout:(wallet|paystack|cancel):[a-z0-9]{7}$"))
     app.add_handler(CallbackQueryHandler(start_place_order_callback, pattern=r"^start:place_order$"))
     app.add_handler(CallbackQueryHandler(order_action_callback, pattern=r"^order_action:(my_orders|main_menu)$"))
     app.add_handler(MessageHandler((filters.TEXT | filters.CONTACT) & ~filters.COMMAND, text_router))

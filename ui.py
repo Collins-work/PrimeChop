@@ -117,7 +117,7 @@ def payment_method_keyboard(order_ref: str, wallet_balance: int, amount: int) ->
         rows.append([InlineKeyboardButton(f"👛 Pay with Wallet (₦{wallet_balance:,})", callback_data=f"checkout:wallet:{order_ref}")])
     else:
         rows.append([InlineKeyboardButton("💳 Top up wallet", callback_data="topup:start")])
-    rows.append([InlineKeyboardButton("💳 Pay with Kora Pay", callback_data=f"checkout:korapay:{order_ref}")])
+    rows.append([InlineKeyboardButton("💳 Pay with Paystack", callback_data=f"checkout:paystack:{order_ref}")])
     rows.append([InlineKeyboardButton("❌ Cancel checkout", callback_data=f"checkout:cancel:{order_ref}")])
     return InlineKeyboardMarkup(rows)
 
@@ -181,6 +181,17 @@ def cart_hall_selection_keyboard(halls) -> InlineKeyboardMarkup:
         rows.append(current_row)
     rows.append([InlineKeyboardButton("🔙 Back to Cart", callback_data="cart:view")])
     return InlineKeyboardMarkup(rows)
+
+
+def delivery_time_selection_keyboard() -> InlineKeyboardMarkup:
+    """Build keyboard for selecting delivery time slot - vendor-style full-width buttons."""
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("⏰ 5:00pm - 6:00pm", callback_data="order:time:5:00-6:00")],
+            [InlineKeyboardButton("⏰ 6:00pm - 6:30pm", callback_data="order:time:6:00-6:30")],
+            [InlineKeyboardButton("⏰ 6:30pm - 7:15pm", callback_data="order:time:6:30-7:15")],
+        ]
+    )
 
 
 def order_claim_keyboard(order_id: int) -> InlineKeyboardMarkup:
@@ -505,11 +516,12 @@ def format_room_invalid() -> str:
     return "❌ Invalid room format. Use A106, E305, or H212."
 
 
-def format_time_prompt() -> str:
-    """Prompt user for preferred delivery time."""
+def format_time_prompt(hall_name: str = "your location") -> str:
+    """Prompt user for preferred delivery time after room selection."""
     return (
-        "⏰ Enter your preferred delivery time slot.\n"
-        "Example: 06:30pm-07:00pm"
+        f"🕐 <b>Delivery Time</b>\n\n"
+        f"📍 Delivering to <b>{hall_name}</b>\n\n"
+        "Select your preferred delivery time slot:"
     )
 
 
@@ -657,7 +669,7 @@ def format_topup_info() -> str:
     return (
         f"{EMOJI_TOPUP} <b>Wallet Top Up</b>\n\n"
         f"Top up your wallet for faster checkout.\n"
-        f"Payment opens a secure Kora Pay card screen.\n\n"
+        f"Payment opens a secure Paystack card screen.\n\n"
         f"<b>Quick Top Up Amounts:</b>\n"
         f"• ₦1,000\n"
         f"• ₦2,000\n"
@@ -679,15 +691,15 @@ def format_topup_amount_prompt() -> str:
     )
 
 
-def format_topup_created(amount: int, tx_ref: str, korapay_mode: str = "live") -> str:
+def format_topup_created(amount: int, tx_ref: str, paystack_mode: str = "live") -> str:
     """Format top-up request created message."""
     text = (
         f"{EMOJI_SUCCESS} <b>Top Up Request Created!</b>\n\n"
         f"{EMOJI_MONEY} <b>Amount:</b> ₦{amount:,}\n"
         f"<b>Reference:</b> {tx_ref}\n\n"
-        f"<i>Tap below to open Kora Pay and complete your top up.</i>"
+        f"<i>Tap below to open Paystack and complete your top up.</i>"
     )
-    if korapay_mode == "mock":
+    if paystack_mode == "mock":
         text += (
             f"\n\n{EMOJI_INFO} <i>Mock mode: admin has been notified to confirm this top up</i>"
             f"\n<i>Command fallback:</i> /confirm_topup {tx_ref}"
@@ -711,7 +723,7 @@ def format_wallet_info(balance: int, user_name: str) -> str:
         f"{EMOJI_WALLET} <b>Your Wallet</b>\n\n"
         f"{EMOJI_CUSTOMER} <b>Name:</b> {user_name}\n"
         f"{EMOJI_MONEY} <b>Balance:</b> ₦{balance:,}\n\n"
-        f"<i>Top up with card via Kora Pay for faster checkout.</i>"
+        f"<i>Top up with card via Paystack for faster checkout.</i>"
     )
 
 
@@ -742,16 +754,19 @@ def format_checkout_payment_choice(
     wallet_balance: int,
     subtotal: int = 0,
     service_fee: int = 0,
+    delivery_time: str = "",
 ) -> str:
     """Format payment choice prompt after order details are captured."""
     sufficiency = "enough" if wallet_balance >= amount else "not enough"
     base_amount = subtotal if subtotal > 0 else max(0, amount - max(0, service_fee))
+    time_display = f"🕐 <b>Time:</b> {delivery_time}\n" if delivery_time else ""
     return (
         "💸 <b>Choose Payment Method</b>\n\n"
         f"📦 <b>Order ID:</b> #{order_ref}\n"
         f"🏪 <b>Vendor:</b> {vendor_name}\n"
         f"🍽️ <b>Item:</b> {item_name}\n"
         f"🏫 <b>Delivery:</b> {hall_name} - Room {room_number}\n"
+        f"{time_display}"
         f"🧾 <b>Subtotal:</b> ₦{base_amount:,}\n"
         f"🛠️ <b>Service Fee:</b> ₦{max(0, service_fee):,}\n"
         f"💰 <b>Total:</b> ₦{amount:,}\n"
@@ -768,7 +783,7 @@ def format_wallet_insufficient(balance: int, amount: int) -> str:
         f"Wallet: ₦{balance:,}\n"
         f"Required: ₦{amount:,}\n"
         f"Shortfall: ₦{shortfall:,}\n\n"
-        "Top up your wallet or pay with Kora Pay card checkout."
+        "Top up your wallet or pay with Paystack card checkout."
     )
 
 

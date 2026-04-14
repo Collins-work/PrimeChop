@@ -116,14 +116,15 @@ class Settings:
     cafeteria_name: str
     order_vendors: list[str]
     delivery_halls: list[str]
-    korapay_mode: str
-    korapay_secret_key: str
-    korapay_public_key: str
-    korapay_currency: str
-    korapay_callback_url: str
-    korapay_initialize_url: str
-    korapay_web_host: str
-    korapay_web_port: int
+    paystack_mode: str
+    paystack_secret_key: str
+    paystack_public_key: str
+    paystack_currency: str
+    paystack_callback_url: str
+    paystack_initialize_url: str
+    paystack_verify_url: str
+    paystack_web_host: str
+    paystack_web_port: int
     service_fee_total: int
     service_fee_split_mode: str
     placeholder_image_url: str
@@ -181,18 +182,22 @@ settings = Settings(
         "Hall Lydia",
         "Hall Deborah",
     ],
-    korapay_mode=os.getenv("KORAPAY_MODE", "mock").strip().lower(),
-    korapay_secret_key=os.getenv("KORAPAY_SECRET_KEY", "").strip(),
-    korapay_public_key=os.getenv("KORAPAY_PUBLIC_KEY", "").strip(),
-    korapay_currency=os.getenv("KORAPAY_CURRENCY", "NGN").strip(),
-    korapay_callback_url=os.getenv("KORAPAY_CALLBACK_URL", "").strip(),
-    korapay_initialize_url=os.getenv(
-        "KORAPAY_INITIALIZE_URL",
-        "https://api.korapay.com/merchant/api/v1/charges/initialize",
+    paystack_mode=os.getenv("PAYSTACK_MODE", "mock").strip().lower(),
+    paystack_secret_key=os.getenv("PAYSTACK_SECRET_KEY", "").strip(),
+    paystack_public_key=os.getenv("PAYSTACK_PUBLIC_KEY", "").strip(),
+    paystack_currency=os.getenv("PAYSTACK_CURRENCY", "NGN").strip(),
+    paystack_callback_url=os.getenv("PAYSTACK_CALLBACK_URL", "").strip(),
+    paystack_initialize_url=os.getenv(
+        "PAYSTACK_INITIALIZE_URL",
+        "https://api.paystack.co/transaction/initialize",
     ).strip(),
-    korapay_web_host=os.getenv("KORAPAY_WEB_HOST", "0.0.0.0").strip(),
-    korapay_web_port=int(os.getenv("KORAPAY_WEB_PORT", os.getenv("PORT", "8080"))),
-    service_fee_total=int(os.getenv("SERVICE_FEE_TOTAL", "500")),
+    paystack_verify_url=os.getenv(
+        "PAYSTACK_VERIFY_URL",
+        "https://api.paystack.co/transaction/verify",
+    ).strip(),
+    paystack_web_host=os.getenv("PAYSTACK_WEB_HOST", "0.0.0.0").strip(),
+    paystack_web_port=int(os.getenv("PAYSTACK_WEB_PORT", os.getenv("PORT", "8080"))),
+    service_fee_total=int(os.getenv("SERVICE_FEE_TOTAL", "650")),
     service_fee_split_mode=os.getenv("SERVICE_FEE_SPLIT_MODE", "equal").strip().lower(),
     placeholder_image_url=os.getenv(
         "PLACEHOLDER_IMAGE_URL",
@@ -230,11 +235,11 @@ if not settings.telegram_bot_token:
     raise RuntimeError("TELEGRAM_BOT_TOKEN is required in environment variables.")
 
 if (
-    settings.korapay_mode == "live"
-    and ("test" in settings.korapay_secret_key.lower()
-         or "test" in settings.korapay_public_key.lower())
+    settings.paystack_mode == "live"
+    and ("test" in settings.paystack_secret_key.lower()
+         or "test" in settings.paystack_public_key.lower())
 ):
     logger.warning(
-        "Kora Pay is running in live mode with test credentials (sandbox). "
+        "Paystack is running in live mode with test credentials. "
         "This is fine for testing but should be switched to production keys before go-live."
     )

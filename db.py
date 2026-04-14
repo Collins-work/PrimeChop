@@ -1332,7 +1332,7 @@ class Database:
         waiter_share: int,
         platform_share: int,
         payment_method: str = "transfer",
-        payment_provider: str = "korapay",
+        payment_provider: str = "paystack",
         payment_tx_ref: str | None = None,
         payment_link: str | None = None,
     ) -> int:
@@ -1656,7 +1656,7 @@ class Database:
             "cancelled_orders": cancelled_orders,
             "payment_methods": {
                 "wallet": payment_totals.get("wallet", 0),
-                "korapay": payment_totals.get("korapay", 0),
+                "paystack": payment_totals.get("paystack", 0),
                 "transfer": payment_totals.get("transfer", 0),
             },
             "top_vendors": [
