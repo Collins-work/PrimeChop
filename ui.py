@@ -4,6 +4,7 @@ Provides formatted message templates and improved keyboard layouts.
 """
 
 import re
+from html import escape
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
 
@@ -846,7 +847,7 @@ def format_admin_additem_success(item_id: int, name: str, price: int) -> str:
 
 def format_error_message(error_text: str) -> str:
     """Format generic error message."""
-    return f"{EMOJI_ERROR} <b>Error</b>\n\n{error_text}"
+    return f"{EMOJI_ERROR} <b>Error</b>\n\n{escape(error_text)}"
 
 
 def format_unauthorized() -> str:

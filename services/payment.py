@@ -67,12 +67,16 @@ class KoraPayClient:
         headers = {
             "Authorization": f"Bearer {self.secret_key}",
             "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": "PrimeChopBot/1.0 (+https://primechop-production.up.railway.app)",
         }
 
         async with aiohttp.ClientSession() as session:
             async with session.post(self.initialize_url, json=payload, headers=headers) as resp:
                 raw_body = await resp.text()
                 request_id = (resp.headers.get("kora-request-id") or "").strip()
+                cf_ray = (resp.headers.get("cf-ray") or "").strip()
+                server = (resp.headers.get("server") or "").strip().lower()
                 data = None
                 if raw_body:
                     try:
@@ -95,8 +99,18 @@ class KoraPayClient:
                             body_preview = "empty response body"
                         body_preview = body_preview[:240]
                         message = f"HTTP {resp.status} ({body_preview})"
+                    if (
+                        resp.status == 403
+                        and "<!doctype html" in (raw_body or "").lower()
+                        and ("cloudflare" in server or cf_ray)
+                    ):
+                        message = (
+                            "HTTP 403 (Blocked by upstream edge/WAF before reaching Kora API)"
+                        )
                     if request_id:
                         message = f"{message} [kora_request_id={request_id}]"
+                    if cf_ray:
+                        message = f"{message} [cf_ray={cf_ray}]"
                     raise RuntimeError(f"Kora Pay initialize failed: {message}")
 
                 if not isinstance(data, dict):
