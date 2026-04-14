@@ -72,6 +72,7 @@ class KoraPayClient:
         async with aiohttp.ClientSession() as session:
             async with session.post(self.initialize_url, json=payload, headers=headers) as resp:
                 raw_body = await resp.text()
+                request_id = (resp.headers.get("kora-request-id") or "").strip()
                 data = None
                 if raw_body:
                     try:
@@ -94,15 +95,18 @@ class KoraPayClient:
                             body_preview = "empty response body"
                         body_preview = body_preview[:240]
                         message = f"HTTP {resp.status} ({body_preview})"
+                    if request_id:
+                        message = f"{message} [kora_request_id={request_id}]"
                     raise RuntimeError(f"Kora Pay initialize failed: {message}")
 
                 if not isinstance(data, dict):
                     body_preview = " ".join((raw_body or "").split())[:240]
                     if not body_preview:
                         body_preview = "empty response body"
+                    suffix = f", kora_request_id={request_id}" if request_id else ""
                     raise RuntimeError(
                         "Kora Pay initialize returned a non-JSON response "
-                        f"(HTTP {resp.status}, {body_preview})"
+                        f"(HTTP {resp.status}, {body_preview}{suffix})"
                     )
 
                 checkout_url = self._extract_checkout_url(data)
