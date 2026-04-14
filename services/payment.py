@@ -57,10 +57,10 @@ class KoraPayClient:
             "amount": amount,
             "currency": self.currency,
             "reference": tx_ref,
-            "callback_url": self.callback_url,
-            "email": email,
-            "metadata": {
-                "full_name": full_name,
+            "redirect_url": self.callback_url,
+            "customer": {
+                "name": full_name,
+                "email": email,
             },
         }
 
@@ -89,15 +89,15 @@ class KoraPayClient:
                             or ""
                         ).strip()
                     if not message:
-                        body_preview = (raw_body or "").strip()
+                        body_preview = " ".join((raw_body or "").split())
                         if not body_preview:
                             body_preview = "empty response body"
-                        body_preview = body_preview.replace("\n", " ")[:240]
+                        body_preview = body_preview[:240]
                         message = f"HTTP {resp.status} ({body_preview})"
                     raise RuntimeError(f"Kora Pay initialize failed: {message}")
 
                 if not isinstance(data, dict):
-                    body_preview = (raw_body or "").strip().replace("\n", " ")[:240]
+                    body_preview = " ".join((raw_body or "").split())[:240]
                     if not body_preview:
                         body_preview = "empty response body"
                     raise RuntimeError(
