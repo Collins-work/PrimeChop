@@ -2,6 +2,7 @@ import csv
 import re
 import os
 import logging
+import sqlite3
 from pathlib import Path
 from collections import defaultdict
 from contextlib import contextmanager
