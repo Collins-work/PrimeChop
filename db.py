@@ -76,6 +76,9 @@ class _CompatConnection:
     def execute(self, sql_str: str, params: tuple | list | None = None):
         cursor = self._inner.cursor()
         values = tuple(params) if params is not None else tuple()
+        # Keep existing sqlite-style SQL compatible with psycopg.
+        if params is not None and "?" in sql_str:
+            sql_str = sql_str.replace("?", "%s")
         cursor.execute(sql_str, values)
         return _CompatCursor(cursor)
 
