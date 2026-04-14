@@ -5,12 +5,12 @@ import aiohttp
 
 
 @dataclass
-class PaystackPaymentResult:
+class KoraPayPaymentResult:
     tx_ref: str
     checkout_url: str
 
 
-class PaystackClient:
+class KoraPayClient:
     def __init__(
         self,
         mode: str,
@@ -26,7 +26,7 @@ class PaystackClient:
         self.initialize_url = initialize_url
 
     def provider_name(self) -> str:
-        return "paystack"
+        return "korapay"
 
     async def initialize_payment(
         self,
@@ -35,22 +35,22 @@ class PaystackClient:
         full_name: str,
         reference_prefix: str,
         user_id: int,
-    ) -> PaystackPaymentResult:
+    ) -> KoraPayPaymentResult:
         tx_ref = f"{reference_prefix}_{user_id}_{uuid.uuid4().hex[:12]}"
         if self.mode == "mock":
-            return PaystackPaymentResult(
+            return KoraPayPaymentResult(
                 tx_ref=tx_ref,
-                checkout_url=f"https://checkout.mock.paystack.test/pay/{tx_ref}",
+                checkout_url=f"https://checkout.mock.korapay.test/pay/{tx_ref}",
             )
 
         missing_fields = []
         if not self.secret_key:
-            missing_fields.append("PAYSTACK_SECRET_KEY")
+            missing_fields.append("KORAPAY_SECRET_KEY")
         if not self.callback_url:
-            missing_fields.append("PAYSTACK_CALLBACK_URL")
+            missing_fields.append("KORAPAY_CALLBACK_URL")
         if missing_fields:
             missing_csv = ", ".join(missing_fields)
-            raise RuntimeError(f"Paystack live mode is missing required settings: {missing_csv}")
+            raise RuntimeError(f"Kora Pay live mode is missing required settings: {missing_csv}")
 
         payload = {
             "amount": amount,
@@ -73,9 +73,9 @@ class PaystackClient:
                 data = await resp.json(content_type=None)
                 if resp.status >= 400:
                     message = data.get("message") if isinstance(data, dict) else str(data)
-                    raise RuntimeError(f"Paystack initialize failed: {message}")
+                    raise RuntimeError(f"Kora Pay initialize failed: {message}")
                 checkout_url = self._extract_checkout_url(data)
-                return PaystackPaymentResult(tx_ref=tx_ref, checkout_url=checkout_url)
+                return KoraPayPaymentResult(tx_ref=tx_ref, checkout_url=checkout_url)
 
     async def initialize_wallet_topup(
         self,
@@ -83,7 +83,7 @@ class PaystackClient:
         email: str,
         full_name: str,
         user_id: int,
-    ) -> PaystackPaymentResult:
+    ) -> KoraPayPaymentResult:
         return await self.initialize_payment(
             amount=amount,
             email=email,
@@ -99,7 +99,7 @@ class PaystackClient:
         full_name: str,
         user_id: int,
         order_ref: str,
-    ) -> PaystackPaymentResult:
+    ) -> KoraPayPaymentResult:
         return await self.initialize_payment(
             amount=amount,
             email=email,
@@ -110,7 +110,7 @@ class PaystackClient:
 
     def _extract_checkout_url(self, data: dict) -> str:
         if not isinstance(data, dict):
-            raise RuntimeError("Invalid Paystack response format")
+            raise RuntimeError("Invalid Kora Pay response format")
         data_node = data.get("data") or {}
         for key in (
             "authorization_url",
@@ -123,4 +123,4 @@ class PaystackClient:
             value = data_node.get(key)
             if value:
                 return str(value)
-        raise RuntimeError("Paystack response did not include a checkout URL")
+        raise RuntimeError("Kora Pay response did not include a checkout URL")

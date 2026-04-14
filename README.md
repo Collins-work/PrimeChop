@@ -3,8 +3,8 @@
 A Telegram bot for **Cafeteria 1** with:
 - Vendor-first customer ordering flow
 - Waiter assignment by **first to claim** (sent to all online waiters)
-- Wallet top-up flow with Paystack integration (or mock mode)
-- In-app order checkout with Paystack initialization
+- Wallet top-up flow with Kora Pay integration (or mock mode)
+- In-app order checkout with Kora Pay initialization
 - Admin menu management with real image upload support
 - Service fee split logic
 - Nigerian timezone (WAT)
@@ -33,17 +33,18 @@ Then edit `.env`.
 - `DELIVERY_HALLS` = comma-separated hall names shown during checkout
 - `SUPER_ADMIN_SECRET` = strong admin password stored only in `.env` if you want to use the super-admin panel
 
-Paystack:
-- `PAYSTACK_MODE=mock` for simulation
-- Set `PAYSTACK_MODE=live` and real keys/endpoint to integrate
-- `PAYSTACK_SECRET_KEY=sk_live_...` in production (`sk_test_...` for sandbox)
-- `PAYSTACK_CURRENCY=NGN`
-- `PAYSTACK_CALLBACK_URL=https://<your-railway-domain>/paystack/callback`
-- `PAYSTACK_INITIALIZE_URL=https://api.paystack.co/transaction/initialize`
+Kora Pay:
+- `KORAPAY_MODE=mock` for simulation
+- Set `KORAPAY_MODE=live` and real keys/endpoint to integrate
+- `KORAPAY_SECRET_KEY=<your_secret_key>` in production
+- `KORAPAY_PUBLIC_KEY=<your_public_key>` for client-facing references if required by your setup
+- `KORAPAY_CURRENCY=NGN`
+- `KORAPAY_CALLBACK_URL=https://<your-railway-domain>/korapay/callback`
+- `KORAPAY_INITIALIZE_URL=https://api.korapay.com/merchant/api/v1/charges/initialize`
 
-Paystack callback note:
-- This app serves `/paystack/callback` from a dedicated callback web server only when `WEBHOOK_ENABLED=false`.
-- If `WEBHOOK_ENABLED=true`, the app logs a warning and does not expose `/paystack/callback` from the Telegram webhook server in the current setup.
+Kora Pay callback note:
+- This app serves `/korapay/callback` from a dedicated callback web server only when `WEBHOOK_ENABLED=false`.
+- If `WEBHOOK_ENABLED=true`, the app logs a warning and does not expose `/korapay/callback` from the Telegram webhook server in the current setup.
 
 Telegram delivery mode:
 - `WEBHOOK_ENABLED=false` uses polling (good for worker deployment)
@@ -143,7 +144,7 @@ Ordering flow:
 3. Customer selects a food item under that vendor.
 4. Customer selects a delivery hall.
 5. Customer enters the room number.
-6. The bot initializes Paystack checkout and stores the order as pending payment.
+6. The bot initializes Kora Pay checkout and stores the order as pending payment.
 7. After payment is confirmed, the order is released to waiters.
 
 ## 6) Audit Trail (SQLite, Excel, or Google Sheets)

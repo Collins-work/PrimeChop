@@ -116,7 +116,7 @@ def payment_method_keyboard(order_ref: str, wallet_balance: int, amount: int) ->
         rows.append([InlineKeyboardButton(f"👛 Pay with Wallet (₦{wallet_balance:,})", callback_data=f"checkout:wallet:{order_ref}")])
     else:
         rows.append([InlineKeyboardButton("💳 Top up wallet", callback_data="topup:start")])
-    rows.append([InlineKeyboardButton("💳 Pay with Paystack", callback_data=f"checkout:paystack:{order_ref}")])
+    rows.append([InlineKeyboardButton("💳 Pay with Kora Pay", callback_data=f"checkout:korapay:{order_ref}")])
     rows.append([InlineKeyboardButton("❌ Cancel checkout", callback_data=f"checkout:cancel:{order_ref}")])
     return InlineKeyboardMarkup(rows)
 
@@ -656,7 +656,7 @@ def format_topup_info() -> str:
     return (
         f"{EMOJI_TOPUP} <b>Wallet Top Up</b>\n\n"
         f"Top up your wallet for faster checkout.\n"
-        f"Payment opens a secure Paystack card screen.\n\n"
+        f"Payment opens a secure Kora Pay card screen.\n\n"
         f"<b>Quick Top Up Amounts:</b>\n"
         f"• ₦1,000\n"
         f"• ₦2,000\n"
@@ -678,15 +678,15 @@ def format_topup_amount_prompt() -> str:
     )
 
 
-def format_topup_created(amount: int, tx_ref: str, paystack_mode: str = "live") -> str:
+def format_topup_created(amount: int, tx_ref: str, korapay_mode: str = "live") -> str:
     """Format top-up request created message."""
     text = (
         f"{EMOJI_SUCCESS} <b>Top Up Request Created!</b>\n\n"
         f"{EMOJI_MONEY} <b>Amount:</b> ₦{amount:,}\n"
         f"<b>Reference:</b> {tx_ref}\n\n"
-        f"<i>Tap below to open Paystack and complete your top up.</i>"
+        f"<i>Tap below to open Kora Pay and complete your top up.</i>"
     )
-    if paystack_mode == "mock":
+    if korapay_mode == "mock":
         text += (
             f"\n\n{EMOJI_INFO} <i>Mock mode: admin has been notified to confirm this top up</i>"
             f"\n<i>Command fallback:</i> /confirm_topup {tx_ref}"
@@ -710,7 +710,7 @@ def format_wallet_info(balance: int, user_name: str) -> str:
         f"{EMOJI_WALLET} <b>Your Wallet</b>\n\n"
         f"{EMOJI_CUSTOMER} <b>Name:</b> {user_name}\n"
         f"{EMOJI_MONEY} <b>Balance:</b> ₦{balance:,}\n\n"
-        f"<i>Top up with card via Paystack for faster checkout.</i>"
+        f"<i>Top up with card via Kora Pay for faster checkout.</i>"
     )
 
 
@@ -767,7 +767,7 @@ def format_wallet_insufficient(balance: int, amount: int) -> str:
         f"Wallet: ₦{balance:,}\n"
         f"Required: ₦{amount:,}\n"
         f"Shortfall: ₦{shortfall:,}\n\n"
-        "Top up your wallet or pay with Paystack card checkout."
+        "Top up your wallet or pay with Kora Pay card checkout."
     )
 
 

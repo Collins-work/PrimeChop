@@ -74,17 +74,36 @@ def _normalize_google_sheet_id(raw: str) -> str:
     return value
 
 
-def _resolve_db_path() -> str:
-    explicit_db_path = (os.getenv("DB_PATH", "") or "").strip()
-    if explicit_db_path:
-        return explicit_db_path
-    return "primechop.db"
+def _resolve_database_url() -> str:
+    """Resolve PostgreSQL connection URL from environment"""
+    database_url = (os.getenv("DATABASE_URL", "") or "").strip()
+    if database_url:
+        return database_url
+    
+    # Fallback: construct from individual components
+    user = os.getenv("POSTGRES_USER", "").strip()
+    password = os.getenv("POSTGRES_PASSWORD", "").strip()
+    host = os.getenv("POSTGRES_HOST", "localhost").strip()
+    port = os.getenv("POSTGRES_PORT", "5432").strip()
+    database = os.getenv("POSTGRES_DB", "primechop").strip()
+    
+    if not user:
+        raise ValueError(
+            "DATABASE_URL environment variable is required. "
+            "Set it directly or via POSTGRES_* env vars (POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_HOST, POSTGRES_PORT, POSTGRES_DB)"
+        )
+    
+    auth = f"{user}"
+    if password:
+        auth = f"{user}:{password}"
+    
+    return f"postgresql://{auth}@{host}:{port}/{database}"
 
 
 @dataclass(frozen=True)
 class Settings:
     telegram_bot_token: str
-    db_path: str
+    database_url: str
     webhook_enabled: bool
     webhook_base_url: str
     webhook_path: str
@@ -97,14 +116,14 @@ class Settings:
     cafeteria_name: str
     order_vendors: list[str]
     delivery_halls: list[str]
-    paystack_mode: str
-    paystack_secret_key: str
-    paystack_public_key: str
-    paystack_currency: str
-    paystack_callback_url: str
-    paystack_initialize_url: str
-    paystack_web_host: str
-    paystack_web_port: int
+    korapay_mode: str
+    korapay_secret_key: str
+    korapay_public_key: str
+    korapay_currency: str
+    korapay_callback_url: str
+    korapay_initialize_url: str
+    korapay_web_host: str
+    korapay_web_port: int
     service_fee_total: int
     service_fee_split_mode: str
     placeholder_image_url: str
@@ -134,7 +153,7 @@ class Settings:
 
 settings = Settings(
     telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", "").strip(),
-    db_path=_resolve_db_path(),
+    database_url=_resolve_database_url(),
     webhook_enabled=_parse_bool(
         os.getenv("WEBHOOK_ENABLED", ""),
         default=bool(os.getenv("RENDER") and os.getenv("WEBHOOK_BASE_URL")),
@@ -162,17 +181,17 @@ settings = Settings(
         "Hall Lydia",
         "Hall Deborah",
     ],
-    paystack_mode=os.getenv("PAYSTACK_MODE", "mock").strip().lower(),
-    paystack_secret_key=os.getenv("PAYSTACK_SECRET_KEY", "").strip(),
-    paystack_public_key=os.getenv("PAYSTACK_PUBLIC_KEY", "").strip(),
-    paystack_currency=os.getenv("PAYSTACK_CURRENCY", "NGN").strip(),
-    paystack_callback_url=os.getenv("PAYSTACK_CALLBACK_URL", "").strip(),
-    paystack_initialize_url=os.getenv(
-        "PAYSTACK_INITIALIZE_URL",
-        "https://api.paystack.co/transaction/initialize",
+    korapay_mode=os.getenv("KORAPAY_MODE", "mock").strip().lower(),
+    korapay_secret_key=os.getenv("KORAPAY_SECRET_KEY", "").strip(),
+    korapay_public_key=os.getenv("KORAPAY_PUBLIC_KEY", "").strip(),
+    korapay_currency=os.getenv("KORAPAY_CURRENCY", "NGN").strip(),
+    korapay_callback_url=os.getenv("KORAPAY_CALLBACK_URL", "").strip(),
+    korapay_initialize_url=os.getenv(
+        "KORAPAY_INITIALIZE_URL",
+        "https://api.korapay.com/merchant/api/v1/charges/initialize",
     ).strip(),
-    paystack_web_host=os.getenv("PAYSTACK_WEB_HOST", "0.0.0.0").strip(),
-    paystack_web_port=int(os.getenv("PAYSTACK_WEB_PORT", os.getenv("PORT", "8080"))),
+    korapay_web_host=os.getenv("KORAPAY_WEB_HOST", "0.0.0.0").strip(),
+    korapay_web_port=int(os.getenv("KORAPAY_WEB_PORT", os.getenv("PORT", "8080"))),
     service_fee_total=int(os.getenv("SERVICE_FEE_TOTAL", "500")),
     service_fee_split_mode=os.getenv("SERVICE_FEE_SPLIT_MODE", "equal").strip().lower(),
     placeholder_image_url=os.getenv(
@@ -211,11 +230,11 @@ if not settings.telegram_bot_token:
     raise RuntimeError("TELEGRAM_BOT_TOKEN is required in environment variables.")
 
 if (
-    settings.paystack_mode == "live"
-    and (settings.paystack_secret_key.startswith("sk_test_")
-         or settings.paystack_public_key.startswith("pk_test_"))
+    settings.korapay_mode == "live"
+    and ("test" in settings.korapay_secret_key.lower()
+         or "test" in settings.korapay_public_key.lower())
 ):
     logger.warning(
-        "Paystack is running in live mode with test credentials (sandbox). "
+        "Kora Pay is running in live mode with test credentials (sandbox). "
         "This is fine for testing but should be switched to production keys before go-live."
     )

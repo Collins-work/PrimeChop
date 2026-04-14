@@ -1,4 +1,3 @@
-import sqlite3
 import csv
 import re
 import os
@@ -8,15 +7,37 @@ from collections import defaultdict
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
-from typing import Iterable, Optional
+from typing import Iterable, Optional, Any
 
-try:
-    import psycopg
-except Exception:  # pragma: no cover - optional dependency at runtime
-    psycopg = None
+import psycopg
+from psycopg import sql
 
 
 logger = logging.getLogger(__name__)
+
+
+class _CompatRow:
+    """Wraps psycopg Row to provide dict-like access similar to sqlite3.Row"""
+    def __init__(self, cursor_description, row_data):
+        self._row = row_data
+        self._cols = {desc[0]: i for i, desc in enumerate(cursor_description)} if cursor_description else {}
+
+    def __getitem__(self, key):
+        if isinstance(key, str):
+            idx = self._cols.get(key)
+            if idx is None:
+                raise KeyError(key)
+            return self._row[idx]
+        return self._row[key]
+
+    def __contains__(self, key):
+        return key in self._cols
+
+    def get(self, key, default=None):
+        try:
+            return self[key]
+        except (KeyError, IndexError):
+            return default
 
 
 class _CompatCursor:
@@ -37,19 +58,24 @@ class _CompatCursor:
         self._lastrowid = value
 
     def fetchone(self):
-        return self._inner.fetchone()
+        row = self._inner.fetchone()
+        if row is None:
+            return None
+        return _CompatRow(self._inner.description, row)
 
     def fetchall(self):
-        return self._inner.fetchall()
+        rows = self._inner.fetchall()
+        return [_CompatRow(self._inner.description, row) for row in rows]
 
 
 class _CompatConnection:
     def __init__(self, inner_connection):
         self._inner = inner_connection
 
-    def execute(self, sql: str, params: tuple | list | None = None):
+    def execute(self, sql_str: str, params: tuple | list | None = None):
+        cursor = self._inner.cursor()
         values = tuple(params) if params is not None else tuple()
-        cursor = self._inner.execute(sql, values)
+        cursor.execute(sql_str, values)
         return _CompatCursor(cursor)
 
     def commit(self):
@@ -60,213 +86,40 @@ class _CompatConnection:
 
 
 class Database:
-    def __init__(self, path: str, timezone_name: str):
-        self.path = path
+    def __init__(self, database_url: str, timezone_name: str):
+        """
+        Initialize database connection using PostgreSQL.
+        
+        Args:
+            database_url: PostgreSQL connection string (e.g., postgresql://user:pass@host/dbname)
+            timezone_name: Timezone name for timestamp operations
+        """
+        self._database_url = database_url
+        if not database_url or not database_url.strip():
+            raise ValueError("DATABASE_URL environment variable is required for PostgreSQL")
+        
         self.tz = ZoneInfo(timezone_name)
-        self._postgres_mirror_url = (
-            (os.getenv("DATABASE_URL", "") or "").strip()
-            or (os.getenv("POSTGRES_MIRROR_URL", "") or "").strip()
-        )
         self._human_exports_enabled = (os.getenv("HUMAN_READABLE_EXPORTS_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"})
-        db_path = Path(path).expanduser()
-        base_dir = db_path.parent if db_path.parent and str(db_path.parent) not in {"", "."} else Path.cwd()
+        
+        # Create human_readable export directory
+        base_dir = Path.cwd()
         self._human_data_dir = base_dir / "human_readable"
         self._waiter_registry_export_path = self._human_data_dir / "waiter_registry.csv"
         self._orders_users_export_path = self._human_data_dir / "orders_users_tracker.csv"
 
-    def _postgres_mirror_enabled(self) -> bool:
-        return bool(self._postgres_mirror_url) and psycopg is not None
-
-    def _postgres_execute(self, sql: str, params: tuple) -> bool:
-        if not self._postgres_mirror_enabled():
-            return False
-        try:
-            with psycopg.connect(self._postgres_mirror_url) as conn:
-                with conn.cursor() as cur:
-                    cur.execute(sql, params)
-                conn.commit()
-            return True
-        except Exception as exc:
-            logger.warning("Postgres mirror write failed: %s", exc)
-            return False
-
-    def _mirror_waiter_request_by_user_id(self, user_id: int):
-        if not self._postgres_mirror_enabled():
-            return
-        with self.connection() as conn:
-            row = conn.execute(
-                """
-                SELECT
-                    user_id,
-                    public_user_id,
-                    full_name,
-                    details,
-                    status,
-                    reviewed_by,
-                    created_at,
-                    updated_at
-                FROM waiter_requests
-                WHERE user_id=?
-                ORDER BY id DESC
-                LIMIT 1
-                """,
-                (user_id,),
-            ).fetchone()
-        if not row:
-            return
-        self._postgres_execute(
-            """
-            INSERT INTO waiter_requests (
-                id,
-                user_id,
-                public_user_id,
-                full_name,
-                details,
-                status,
-                reviewed_by,
-                created_at,
-                updated_at
-            )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (id) DO UPDATE SET
-                public_user_id=EXCLUDED.public_user_id,
-                user_id=EXCLUDED.user_id,
-                full_name=EXCLUDED.full_name,
-                details=EXCLUDED.details,
-                status=EXCLUDED.status,
-                reviewed_by=EXCLUDED.reviewed_by,
-                updated_at=EXCLUDED.updated_at
-            """,
-            (
-                int(row["id"]),
-                int(row["user_id"]),
-                row["public_user_id"],
-                row["full_name"],
-                row["details"],
-                row["status"],
-                row["reviewed_by"],
-                row["created_at"],
-                row["updated_at"],
-            ),
-        )
-
-    def _mirror_order_by_id(self, order_id: int):
-        if not self._postgres_mirror_enabled():
-            return
-        with self.connection() as conn:
-            row = conn.execute("SELECT * FROM orders WHERE id=?", (order_id,)).fetchone()
-        if not row:
-            return
-        self._postgres_execute(
-            """
-            INSERT INTO orders (
-                id,
-                order_ref,
-                customer_id,
-                item_id,
-                cafeteria_name,
-                amount,
-                order_details,
-                room_number,
-                delivery_time,
-                hall_name,
-                status,
-                payment_method,
-                payment_provider,
-                payment_tx_ref,
-                payment_link,
-                customer_rating,
-                customer_feedback,
-                rating_submitted_at,
-                accepted_at,
-                completed_at,
-                eta_minutes,
-                eta_due_at,
-                waiter_id,
-                service_fee_total,
-                waiter_share,
-                platform_share,
-                created_at,
-                updated_at
-            )
-            VALUES (
-                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                %s, %s, %s, %s, %s, %s, %s, %s
-            )
-            ON CONFLICT (id) DO UPDATE SET
-                order_ref=EXCLUDED.order_ref,
-                customer_id=EXCLUDED.customer_id,
-                item_id=EXCLUDED.item_id,
-                cafeteria_name=EXCLUDED.cafeteria_name,
-                amount=EXCLUDED.amount,
-                order_details=EXCLUDED.order_details,
-                room_number=EXCLUDED.room_number,
-                delivery_time=EXCLUDED.delivery_time,
-                hall_name=EXCLUDED.hall_name,
-                status=EXCLUDED.status,
-                payment_method=EXCLUDED.payment_method,
-                payment_provider=EXCLUDED.payment_provider,
-                payment_tx_ref=EXCLUDED.payment_tx_ref,
-                payment_link=EXCLUDED.payment_link,
-                customer_rating=EXCLUDED.customer_rating,
-                customer_feedback=EXCLUDED.customer_feedback,
-                rating_submitted_at=EXCLUDED.rating_submitted_at,
-                accepted_at=EXCLUDED.accepted_at,
-                completed_at=EXCLUDED.completed_at,
-                eta_minutes=EXCLUDED.eta_minutes,
-                eta_due_at=EXCLUDED.eta_due_at,
-                waiter_id=EXCLUDED.waiter_id,
-                service_fee_total=EXCLUDED.service_fee_total,
-                waiter_share=EXCLUDED.waiter_share,
-                platform_share=EXCLUDED.platform_share,
-                updated_at=EXCLUDED.updated_at
-            """,
-            (
-                int(row["id"]),
-                row["order_ref"],
-                int(row["customer_id"]),
-                int(row["item_id"]),
-                row["cafeteria_name"],
-                int(row["amount"]),
-                row["order_details"],
-                row["room_number"],
-                row["delivery_time"],
-                row["hall_name"],
-                row["status"],
-                row["payment_method"],
-                row["payment_provider"],
-                row["payment_tx_ref"],
-                row["payment_link"],
-                row["customer_rating"],
-                row["customer_feedback"],
-                row["rating_submitted_at"],
-                row["accepted_at"],
-                row["completed_at"],
-                row["eta_minutes"],
-                row["eta_due_at"],
-                row["waiter_id"],
-                int(row["service_fee_total"] or 0),
-                int(row["waiter_share"] or 0),
-                int(row["platform_share"] or 0),
-                row["created_at"],
-                row["updated_at"],
-            ),
-        )
-
     @contextmanager
     def connection(self):
-        db_path = Path(self.path).expanduser()
-        if db_path.parent and str(db_path.parent) not in {"", "."}:
-            db_path.parent.mkdir(parents=True, exist_ok=True)
-        raw_conn = sqlite3.connect(str(db_path))
-        raw_conn.row_factory = sqlite3.Row
-        conn = _CompatConnection(raw_conn)
+        """Context manager for database connections using PostgreSQL"""
+        conn = psycopg.connect(self._database_url)
+        compat_conn = _CompatConnection(conn)
         try:
-            yield conn
-            conn.commit()
+            yield compat_conn
+            compat_conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
         finally:
-            conn.close()
+            compat_conn.close()
 
     def now_iso(self) -> str:
         return datetime.now(self.tz).isoformat()
@@ -557,144 +410,62 @@ class Database:
             return normalized
         return self._infer_meal_slot(item_name)
 
-    def _normalize_existing_vendors(self, conn: sqlite3.Connection):
-        now = self.now_iso()
-        vendors = conn.execute("SELECT id, name FROM vendors ORDER BY id ASC").fetchall()
-        for vendor in vendors:
-            old_name = vendor["name"]
-            new_name = self._normalize_vendor_name(old_name)
-            if not new_name or new_name == old_name:
-                continue
+    def _normalize_existing_vendors(self, conn):
+        """PostgreSQL version - no-op since schema is properly created"""
+        pass
 
-            existing = conn.execute(
-                "SELECT id FROM vendors WHERE name=? AND id<>? LIMIT 1",
-                (new_name, vendor["id"]),
-            ).fetchone()
+    def _ensure_order_columns(self, conn):
+        """PostgreSQL version - no-op since schema is properly created"""
+        pass
 
-            if existing:
-                conn.execute(
-                    "UPDATE menu_items SET vendor_id=? WHERE vendor_id=?",
-                    (existing["id"], vendor["id"]),
-                )
-                conn.execute(
-                    "UPDATE vendors SET active=0, updated_at=? WHERE id=?",
-                    (now, vendor["id"]),
-                )
-                continue
+    def _ensure_vendor_columns(self, conn):
+        """PostgreSQL version - no-op since schema is properly created"""
+        pass
 
-            conn.execute(
-                "UPDATE vendors SET name=?, updated_at=? WHERE id=?",
-                (new_name, now, vendor["id"]),
-            )
+    def _ensure_user_columns(self, conn):
+        """PostgreSQL version - no-op since schema is properly created"""
+        pass
 
-    def _ensure_order_columns(self, conn: sqlite3.Connection):
-        columns = {
-            row["name"]
-            for row in conn.execute("PRAGMA table_info(orders)").fetchall()
-        }
-        if "order_ref" not in columns:
-            conn.execute("ALTER TABLE orders ADD COLUMN order_ref TEXT")
-        if "order_details" not in columns:
-            conn.execute("ALTER TABLE orders ADD COLUMN order_details TEXT")
-        if "room_number" not in columns:
-            conn.execute("ALTER TABLE orders ADD COLUMN room_number TEXT")
-        if "delivery_time" not in columns:
-            conn.execute("ALTER TABLE orders ADD COLUMN delivery_time TEXT")
-        if "hall_name" not in columns:
-            conn.execute("ALTER TABLE orders ADD COLUMN hall_name TEXT")
-        if "payment_method" not in columns:
-            conn.execute("ALTER TABLE orders ADD COLUMN payment_method TEXT DEFAULT 'transfer'")
-        if "payment_provider" not in columns:
-            conn.execute("ALTER TABLE orders ADD COLUMN payment_provider TEXT DEFAULT 'paystack'")
-        if "payment_tx_ref" not in columns:
-            conn.execute("ALTER TABLE orders ADD COLUMN payment_tx_ref TEXT")
-        if "payment_link" not in columns:
-            conn.execute("ALTER TABLE orders ADD COLUMN payment_link TEXT")
-        if "customer_rating" not in columns:
-            conn.execute("ALTER TABLE orders ADD COLUMN customer_rating INTEGER")
-        if "customer_feedback" not in columns:
-            conn.execute("ALTER TABLE orders ADD COLUMN customer_feedback TEXT")
-        if "rating_submitted_at" not in columns:
-            conn.execute("ALTER TABLE orders ADD COLUMN rating_submitted_at TEXT")
-        if "accepted_at" not in columns:
-            conn.execute("ALTER TABLE orders ADD COLUMN accepted_at TEXT")
-        if "completed_at" not in columns:
-            conn.execute("ALTER TABLE orders ADD COLUMN completed_at TEXT")
-        if "eta_minutes" not in columns:
-            conn.execute("ALTER TABLE orders ADD COLUMN eta_minutes INTEGER")
-        if "eta_due_at" not in columns:
-            conn.execute("ALTER TABLE orders ADD COLUMN eta_due_at TEXT")
-        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_order_ref ON orders(order_ref)")
-        conn.execute("UPDATE orders SET payment_method='transfer' WHERE payment_method IS NULL OR payment_method=''")
-        conn.execute("UPDATE orders SET payment_provider='paystack' WHERE payment_provider IS NULL OR payment_provider=''")
-        conn.execute("UPDATE orders SET payment_provider='paystack' WHERE LOWER(payment_provider)='korapay'")
-        conn.execute("UPDATE orders SET payment_method='paystack' WHERE LOWER(payment_method)='korapay'")
-
-    def _ensure_vendor_columns(self, conn: sqlite3.Connection):
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS vendors (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL UNIQUE,
-                active INTEGER DEFAULT 1,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            )
-            """
-        )
-        columns = {
-            row["name"]
-            for row in conn.execute("PRAGMA table_info(menu_items)").fetchall()
-        }
-        if "vendor_id" not in columns:
-            conn.execute("ALTER TABLE menu_items ADD COLUMN vendor_id INTEGER")
-        if "meal_slot" not in columns:
-            conn.execute("ALTER TABLE menu_items ADD COLUMN meal_slot TEXT DEFAULT 'any'")
-
-    def _ensure_user_columns(self, conn: sqlite3.Connection):
-        columns = {
-            row["name"]
-            for row in conn.execute("PRAGMA table_info(users)").fetchall()
-        }
-        if "waiter_code" not in columns:
-            conn.execute("ALTER TABLE users ADD COLUMN waiter_code TEXT")
-        if "waiter_verified" not in columns:
-            conn.execute("ALTER TABLE users ADD COLUMN waiter_verified INTEGER DEFAULT 0")
-        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_waiter_code ON users(waiter_code)")
-
-    def _ensure_waiter_request_columns(self, conn: sqlite3.Connection):
-        columns = {
-            row["name"]
-            for row in conn.execute("PRAGMA table_info(waiter_requests)").fetchall()
-        }
-        if "public_user_id" not in columns:
-            conn.execute("ALTER TABLE waiter_requests ADD COLUMN public_user_id TEXT")
-        conn.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_waiter_requests_public_user_id ON waiter_requests(public_user_id)"
-        )
+    def _ensure_waiter_request_columns(self, conn):
+        """PostgreSQL version - no-op since schema is properly created"""
+        pass
 
     def init(self):
+        """Initialize PostgreSQL database schema"""
         with self.connection() as conn:
+            # Create tables
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS users (
-                    user_id INTEGER PRIMARY KEY,
+                    user_id BIGINT PRIMARY KEY,
                     full_name TEXT,
                     role TEXT DEFAULT 'customer',
                     wallet_balance INTEGER DEFAULT 0,
                     waiter_online INTEGER DEFAULT 0,
-                    waiter_code TEXT,
+                    waiter_code TEXT UNIQUE,
                     waiter_verified INTEGER DEFAULT 0,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 )
                 """
             )
-            self._ensure_user_columns(conn)
+            
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS vendors (
+                    id SERIAL PRIMARY KEY,
+                    name TEXT NOT NULL UNIQUE,
+                    active INTEGER DEFAULT 1,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS menu_items (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    id SERIAL PRIMARY KEY,
                     vendor_id INTEGER,
                     name TEXT NOT NULL,
                     price INTEGER NOT NULL,
@@ -703,16 +474,18 @@ class Database:
                     image_url TEXT,
                     active INTEGER DEFAULT 1,
                     created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY (vendor_id) REFERENCES vendors(id)
                 )
                 """
             )
+            
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS orders (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    id SERIAL PRIMARY KEY,
                     order_ref TEXT UNIQUE,
-                    customer_id INTEGER NOT NULL,
+                    customer_id BIGINT NOT NULL,
                     item_id INTEGER NOT NULL,
                     cafeteria_name TEXT NOT NULL,
                     amount INTEGER NOT NULL,
@@ -732,58 +505,66 @@ class Database:
                     completed_at TEXT,
                     eta_minutes INTEGER,
                     eta_due_at TEXT,
-                    waiter_id INTEGER,
+                    waiter_id BIGINT,
                     service_fee_total INTEGER NOT NULL,
                     waiter_share INTEGER NOT NULL,
                     platform_share INTEGER NOT NULL,
                     created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY (customer_id) REFERENCES users(user_id),
+                    FOREIGN KEY (item_id) REFERENCES menu_items(id),
+                    FOREIGN KEY (waiter_id) REFERENCES users(user_id)
                 )
                 """
             )
-            self._ensure_vendor_columns(conn)
-            self._normalize_existing_vendors(conn)
-            self._ensure_order_columns(conn)
+            
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS wallet_transactions (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id INTEGER NOT NULL,
+                    id SERIAL PRIMARY KEY,
+                    user_id BIGINT NOT NULL,
                     amount INTEGER NOT NULL,
                     tx_type TEXT NOT NULL,
                     tx_ref TEXT,
                     payment_link TEXT,
                     status TEXT NOT NULL,
                     created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY (user_id) REFERENCES users(user_id)
                 )
                 """
             )
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_wallet_transactions_user_id ON wallet_transactions(user_id)"
-            )
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_wallet_transactions_tx_ref ON wallet_transactions(tx_ref)"
-            )
+            
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS waiter_requests (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id INTEGER NOT NULL,
+                    id SERIAL PRIMARY KEY,
+                    user_id BIGINT NOT NULL,
                     public_user_id TEXT UNIQUE,
                     full_name TEXT NOT NULL,
                     details TEXT,
                     status TEXT NOT NULL DEFAULT 'pending',
-                    reviewed_by INTEGER,
+                    reviewed_by BIGINT,
                     created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY (user_id) REFERENCES users(user_id),
+                    FOREIGN KEY (reviewed_by) REFERENCES users(user_id)
                 )
                 """
             )
-            self._ensure_waiter_request_columns(conn)
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_waiter_requests_status ON waiter_requests(status)"
-            )
+            
+            # Create indexes
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_orders_customer_id ON orders(customer_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_orders_waiter_id ON orders(waiter_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_orders_order_ref ON orders(order_ref)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_wallet_transactions_user_id ON wallet_transactions(user_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_wallet_transactions_tx_ref ON wallet_transactions(tx_ref)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_waiter_requests_user_id ON waiter_requests(user_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_waiter_requests_status ON waiter_requests(status)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_users_waiter_code ON users(waiter_code)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_menu_items_vendor_id ON menu_items(vendor_id)")
+            
         self.refresh_human_readable_exports()
 
     def seed_vendors(self, vendor_names: Iterable[str]):
@@ -1414,7 +1195,7 @@ class Database:
         waiter_share: int,
         platform_share: int,
         payment_method: str = "transfer",
-        payment_provider: str = "paystack",
+        payment_provider: str = "korapay",
         payment_tx_ref: str | None = None,
         payment_link: str | None = None,
     ) -> int:
@@ -1738,7 +1519,7 @@ class Database:
             "cancelled_orders": cancelled_orders,
             "payment_methods": {
                 "wallet": payment_totals.get("wallet", 0),
-                "paystack": payment_totals.get("paystack", 0),
+                "korapay": payment_totals.get("korapay", 0),
                 "transfer": payment_totals.get("transfer", 0),
             },
             "top_vendors": [
