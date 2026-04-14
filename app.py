@@ -957,18 +957,23 @@ async def prime_chat_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 db = Database(database_url=settings.database_url, timezone_name=settings.bot_timezone)
-audit_trail = ExcelAuditTrail(
-    file_path=settings.excel_audit_file,
-    enabled=settings.excel_audit_enabled,
-    backend=settings.excel_audit_backend,
-    google_spreadsheet_id=settings.google_sheets_spreadsheet_id,
-    google_credentials_file=settings.google_sheets_credentials_file,
-    order_sheet_name=settings.google_sheets_order_sheet,
-    waiter_sheet_name=settings.google_sheets_waiter_sheet,
-    async_writes=settings.excel_audit_async_writes,
-    flush_interval_seconds=settings.excel_audit_flush_interval_seconds,
-    max_batch_size=settings.excel_audit_batch_size,
-)
+try:
+    audit_trail = ExcelAuditTrail(
+        file_path=settings.excel_audit_file,
+        enabled=settings.excel_audit_enabled,
+        backend=settings.excel_audit_backend,
+        google_spreadsheet_id=settings.google_sheets_spreadsheet_id,
+        google_credentials_file=settings.google_sheets_credentials_file,
+        order_sheet_name=settings.google_sheets_order_sheet,
+        waiter_sheet_name=settings.google_sheets_waiter_sheet,
+        async_writes=settings.excel_audit_async_writes,
+        flush_interval_seconds=settings.excel_audit_flush_interval_seconds,
+        max_batch_size=settings.excel_audit_batch_size,
+    )
+except Exception as exc:
+    logger.exception("Audit backend initialization failed; continuing with audit disabled: %s", exc)
+    audit_trail = ExcelAuditTrail(file_path=settings.excel_audit_file, enabled=False)
+
 if settings.excel_audit_enabled and settings.excel_audit_backend == "google":
     sheet_url = audit_trail.get_google_sheet_url()
     if sheet_url:
