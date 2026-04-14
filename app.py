@@ -131,6 +131,13 @@ logger = logging.getLogger(__name__)
 
 TELEGRAM_TEXT_SOFT_LIMIT = 3800
 ADMIN_CATALOG_PAGE_SIZE = 12
+ORDER_TIME_CALLBACK_PATTERN = r"^order:time:(?:\d{4}-\d{4}|\d{1,2}:\d{2}-\d{1,2}:\d{2})$"
+
+DELIVERY_TIME_SLOTS = [
+    ("17:00", "18:00"),
+    ("18:00", "18:30"),
+    ("18:30", "19:15"),
+]
 
 # This conversation mixes callback queries and text input by design (room entry).
 # Keep per_message at default and silence the advisory warning.
@@ -1384,6 +1391,23 @@ def normalize_room(room_text: str) -> str | None:
     return None
 
 
+def _hhmm_to_minutes(hhmm: str) -> int:
+    hours_text, minutes_text = hhmm.split(":", maxsplit=1)
+    return int(hours_text) * 60 + int(minutes_text)
+
+
+def _available_delivery_slots(now: datetime | None = None) -> list[tuple[str, str]]:
+    current = now or datetime.now()
+    current_minutes = current.hour * 60 + current.minute
+    return [slot for slot in DELIVERY_TIME_SLOTS if current_minutes < _hhmm_to_minutes(slot[1])]
+
+
+def _format_delivery_time_label(start_hhmm: str, end_hhmm: str) -> str:
+    start_label = datetime.strptime(start_hhmm, "%H:%M").strftime("%I:%M%p").lstrip("0").lower()
+    end_label = datetime.strptime(end_hhmm, "%H:%M").strftime("%I:%M%p").lstrip("0").lower()
+    return f"{start_label} - {end_label}"
+
+
 def generate_order_ref() -> str:
     alphabet = string.ascii_lowercase + string.digits
     for _ in range(20):
@@ -1833,6 +1857,11 @@ def _get_item_selection(context: ContextTypes.DEFAULT_TYPE) -> dict:
 
 def _build_item_selection_text(item_name: str, price: int, quantity: int, vendor_name: str) -> str:
     subtotal = price * quantity
+    requirement_note = ""
+    if vendor_name in MANDATORY_PLASTIC_PACK_VENDORS and item_name.casefold() != MANDATORY_PLASTIC_PACK_ITEM_NAME.casefold():
+        requirement_note = (
+            "\n\n⚠️ <b>Mandatory item:</b> Add <b>Plastic pack</b> from this vendor before checkout."
+        )
     return (
         f"🍽️ <b>{item_name}</b>\n"
         f"🏪 <b>Vendor:</b> {vendor_name}\n"
@@ -1840,6 +1869,7 @@ def _build_item_selection_text(item_name: str, price: int, quantity: int, vendor
         f"🔢 <b>Quantity:</b> {quantity}\n"
         f"🧾 <b>Subtotal:</b> ₦{subtotal:,}\n\n"
         "Use Add to Cart to continue and optionally include a delivery note."
+        f"{requirement_note}"
     )
 
 
@@ -1891,6 +1921,56 @@ def _cart_lines_and_total(context: ContextTypes.DEFAULT_TYPE) -> tuple[list[str]
         if note:
             lines.append(f"  📝 Note: {html.escape(note, quote=False)}")
     return lines, total, rows
+
+
+MANDATORY_PLASTIC_PACK_VENDORS = {
+    "Evelyn chip& protein",
+    "Grandpa chips",
+}
+MANDATORY_PLASTIC_PACK_ITEM_NAME = "Plastic pack"
+
+
+def _cart_missing_mandatory_plastic_pack_vendors(context: ContextTypes.DEFAULT_TYPE) -> list[str]:
+    cart = _get_cart(context)
+    required_vendors: set[str] = set()
+    satisfied_vendors: set[str] = set()
+
+    for item_id, qty in cart.items():
+        if qty <= 0:
+            continue
+        item = db.get_menu_item(item_id)
+        if not item:
+            continue
+
+        vendor_name = _cart_vendor_name(item)
+        if vendor_name not in MANDATORY_PLASTIC_PACK_VENDORS:
+            continue
+
+        item_name = str(item["name"] or "").strip().casefold()
+        if item_name == MANDATORY_PLASTIC_PACK_ITEM_NAME.casefold():
+            satisfied_vendors.add(vendor_name)
+        else:
+            required_vendors.add(vendor_name)
+
+    return sorted(vendor_name for vendor_name in required_vendors if vendor_name not in satisfied_vendors)
+
+
+def _mandatory_plastic_pack_requirement_text(vendors: list[str], *, html_mode: bool = False) -> str:
+    if not vendors:
+        return ""
+
+    pack_label = "<b>Plastic pack</b>" if html_mode else "Plastic pack"
+    vendor_names = [html.escape(vendor, quote=False) if html_mode else vendor for vendor in vendors]
+    if len(vendor_names) == 1:
+        vendor_text = vendor_names[0]
+    elif len(vendor_names) == 2:
+        vendor_text = f"{vendor_names[0]} and {vendor_names[1]}"
+    else:
+        vendor_text = ", ".join(vendor_names[:-1]) + f", and {vendor_names[-1]}"
+
+    if html_mode:
+        return f"⚠️ <b>Mandatory item required:</b> Add {pack_label} from {vendor_text} before checkout."
+    return f"Add {pack_label} from {vendor_text} before checkout."
 
 
 def _cart_keyboard(context: ContextTypes.DEFAULT_TYPE) -> InlineKeyboardMarkup:
@@ -2013,6 +2093,17 @@ async def _finalize_order_checkout(update: Update, context: ContextTypes.DEFAULT
     if not draft:
         await update.effective_message.reply_text("Order session expired. Tap Place an Order and try again.")
         return ConversationHandler.END
+
+    if draft.get("from_cart"):
+        missing_vendors = _cart_missing_mandatory_plastic_pack_vendors(context)
+        if missing_vendors:
+            context.user_data.pop("order_draft", None)
+            context.user_data.pop("cart_room_mode", None)
+            await update.effective_message.reply_text(
+                _mandatory_plastic_pack_requirement_text(missing_vendors, html_mode=True),
+                parse_mode="HTML",
+            )
+            return ConversationHandler.END
 
     user = update.effective_user
     order_ref = generate_order_ref()
@@ -2907,8 +2998,13 @@ async def view_cart(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.effective_message.reply_text(format_empty_cart(), parse_mode="HTML", reply_markup=cart_actions_keyboard())
         return
 
+    missing_vendors = _cart_missing_mandatory_plastic_pack_vendors(context)
+    cart_text = format_cart_view(lines, total)
+    if missing_vendors:
+        cart_text += f"\n\n{_mandatory_plastic_pack_requirement_text(missing_vendors, html_mode=True)}"
+
     await update.effective_message.reply_text(
-        format_cart_view(lines, total),
+        cart_text,
         parse_mode="HTML",
         reply_markup=_cart_keyboard(context),
     )
@@ -2941,6 +3037,11 @@ async def cart_action_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         return
 
     if action == "checkout":
+        missing_vendors = _cart_missing_mandatory_plastic_pack_vendors(context)
+        if missing_vendors:
+            await query.answer(_mandatory_plastic_pack_requirement_text(missing_vendors), show_alert=True)
+            return
+
         cart_draft = _build_cart_checkout_draft(context)
         if not cart_draft:
             await query.answer("Your cart is empty.", show_alert=True)
@@ -2959,9 +3060,14 @@ async def cart_action_callback(update: Update, context: ContextTypes.DEFAULT_TYP
                 reply_markup=cart_actions_keyboard(),
             )
             return
+
+        missing_vendors = _cart_missing_mandatory_plastic_pack_vendors(context)
+        cart_text = format_cart_view(lines, total)
+        if missing_vendors:
+            cart_text += f"\n\n{_mandatory_plastic_pack_requirement_text(missing_vendors, html_mode=True)}"
         await _edit_or_send_callback_message(
             query,
-            format_cart_view(lines, total),
+            cart_text,
             parse_mode="HTML",
             reply_markup=_cart_keyboard(context),
         )
@@ -4713,12 +4819,19 @@ async def order_room_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
     draft["room_number"] = room_number
     context.user_data["order_draft"] = draft
     context.user_data.pop("cart_room_mode", None)
-    
-    # Prompt for delivery time
+
+    available_slots = _available_delivery_slots()
+    if not available_slots:
+        context.user_data.pop("order_draft", None)
+        await update.effective_message.reply_text(
+            "No delivery time slots are available right now. Please try again tomorrow.",
+        )
+        return ConversationHandler.END
+
     await update.effective_message.reply_text(
         format_time_prompt(draft.get("hall_name", "your location")),
         parse_mode="HTML",
-        reply_markup=delivery_time_selection_keyboard(),
+        reply_markup=delivery_time_selection_keyboard(available_slots),
     )
     return ORDER_TIME
 
@@ -4733,16 +4846,44 @@ async def order_time_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("Order session expired. Please place the order again.")
         return ConversationHandler.END
 
-    data_parts = query.data.split(":")
-    if len(data_parts) != 4 or data_parts[0] != "order" or data_parts[1] != "time":
+    start_hhmm = ""
+    end_hhmm = ""
+
+    compact_match = re.fullmatch(r"order:time:(\d{4})-(\d{4})", query.data or "")
+    if compact_match:
+        start_raw, end_raw = compact_match.groups()
+        start_hhmm = f"{start_raw[:2]}:{start_raw[2:]}"
+        end_hhmm = f"{end_raw[:2]}:{end_raw[2:]}"
+    else:
+        legacy_match = re.fullmatch(r"order:time:(\d{1,2}:\d{2})-(\d{1,2}:\d{2})", query.data or "")
+        if legacy_match:
+            start_hhmm, end_hhmm = legacy_match.groups()
+
+    if not start_hhmm or not end_hhmm:
         await query.answer("Invalid time selection.", show_alert=True)
         return ORDER_TIME
 
-    delivery_time = f"{data_parts[2]}:{data_parts[3]}"
+    selected_slot = (start_hhmm, end_hhmm)
+    available_slots = _available_delivery_slots()
+    if selected_slot not in available_slots:
+        await query.answer("That time slot has already passed. Please pick an available slot.", show_alert=True)
+        if available_slots:
+            await query.edit_message_text(
+                format_time_prompt(draft.get("hall_name", "your location")),
+                parse_mode="HTML",
+                reply_markup=delivery_time_selection_keyboard(available_slots),
+            )
+            return ORDER_TIME
+
+        context.user_data.pop("order_draft", None)
+        await query.edit_message_text("No delivery time slots are available right now. Please try again tomorrow.")
+        return ConversationHandler.END
+
+    delivery_time = _format_delivery_time_label(start_hhmm, end_hhmm)
     draft["delivery_time"] = delivery_time
     context.user_data["order_draft"] = draft
 
-    await _finalize_order_checkout(update, context)
+    return await _finalize_order_checkout(update, context)
 
 
 async def order_flow_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -5273,7 +5414,7 @@ def main():
             ORDER_ITEM: [CallbackQueryHandler(order_item_callback, pattern=r"^catalog:item:\d+$")],
             ORDER_HALL: [CallbackQueryHandler(order_hall_callback, pattern=r"^catalog:hall:\d+$")],
             ORDER_ROOM: [MessageHandler(filters.TEXT & ~filters.COMMAND, order_room_step)],
-            ORDER_TIME: [CallbackQueryHandler(order_time_step, pattern=r"^order:time:[\d:]+-[\d:]+$")],
+            ORDER_TIME: [CallbackQueryHandler(order_time_step, pattern=ORDER_TIME_CALLBACK_PATTERN)],
         },
         fallbacks=[CommandHandler("cancel", order_flow_cancel)],
         per_chat=True,
@@ -5320,6 +5461,7 @@ def main():
     app.add_handler(CallbackQueryHandler(catalog_add_current_callback, pattern=r"^catalog:add_(current|with_note|without_note)$"))
     app.add_handler(CallbackQueryHandler(cart_action_callback, pattern=r"^cart:(view|vendors|clear|checkout)$"))
     app.add_handler(CallbackQueryHandler(cart_hall_callback, pattern=r"^cart:hall:\d+$"))
+    app.add_handler(CallbackQueryHandler(order_time_step, pattern=ORDER_TIME_CALLBACK_PATTERN))
     app.add_handler(CallbackQueryHandler(cart_adjust_quantity_callback, pattern=r"^cart:(inc|dec):\d+$"))
     app.add_handler(CallbackQueryHandler(waiter_portal_callback, pattern=r"^waiter_portal:(login|register)$"))
     app.add_handler(CallbackQueryHandler(claim_order_callback, pattern=r"^claim:\d+$"))

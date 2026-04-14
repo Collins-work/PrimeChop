@@ -4,6 +4,7 @@ Provides formatted message templates and improved keyboard layouts.
 """
 
 import re
+from datetime import datetime
 from html import escape
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
@@ -183,15 +184,21 @@ def cart_hall_selection_keyboard(halls) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows)
 
 
-def delivery_time_selection_keyboard() -> InlineKeyboardMarkup:
-    """Build keyboard for selecting delivery time slot - vendor-style full-width buttons."""
-    return InlineKeyboardMarkup(
-        [
-            [InlineKeyboardButton("⏰ 5:00pm - 6:00pm", callback_data="order:time:5:00-6:00")],
-            [InlineKeyboardButton("⏰ 6:00pm - 6:30pm", callback_data="order:time:6:00-6:30")],
-            [InlineKeyboardButton("⏰ 6:30pm - 7:15pm", callback_data="order:time:6:30-7:15")],
-        ]
-    )
+def delivery_time_selection_keyboard(slots) -> InlineKeyboardMarkup:
+    """Build keyboard for selecting delivery time slots using HH:MM ranges."""
+    rows = []
+    for start_hhmm, end_hhmm in slots:
+        start_label = datetime.strptime(start_hhmm, "%H:%M").strftime("%I:%M%p").lstrip("0").lower()
+        end_label = datetime.strptime(end_hhmm, "%H:%M").strftime("%I:%M%p").lstrip("0").lower()
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    f"⏰ {start_label} - {end_label}",
+                    callback_data=f"order:time:{start_hhmm.replace(':', '')}-{end_hhmm.replace(':', '')}",
+                )
+            ]
+        )
+    return InlineKeyboardMarkup(rows)
 
 
 def order_claim_keyboard(order_id: int) -> InlineKeyboardMarkup:
