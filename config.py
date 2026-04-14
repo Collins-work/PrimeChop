@@ -243,3 +243,17 @@ if (
         "Paystack is running in live mode with test credentials. "
         "This is fine for testing but should be switched to production keys before go-live."
     )
+
+if settings.paystack_mode == "live":
+    secret_key = settings.paystack_secret_key.strip()
+    public_key = settings.paystack_public_key.strip()
+
+    if not secret_key:
+        logger.warning("PAYSTACK_SECRET_KEY is empty while PAYSTACK_MODE=live.")
+    elif secret_key.startswith("pk_"):
+        logger.warning("PAYSTACK_SECRET_KEY looks like a public key (starts with pk_).")
+
+    if not public_key:
+        logger.warning("PAYSTACK_PUBLIC_KEY is empty while PAYSTACK_MODE=live.")
+    elif public_key.startswith("sk_"):
+        logger.warning("PAYSTACK_PUBLIC_KEY looks like a secret key (starts with sk_).")
