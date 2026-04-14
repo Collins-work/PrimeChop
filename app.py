@@ -18,7 +18,7 @@ from typing import Dict, Optional
 
 import aiohttp
 from aiohttp import web
-from telegram import Bot, BotCommand, BotCommandScopeChat, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup, Update
+from telegram import Bot, BotCommand, BotCommandScopeAllPrivateChats, BotCommandScopeChat, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup, Update
 from telegram.error import BadRequest, Forbidden, NetworkError, TelegramError
 from telegram.request import HTTPXRequest
 from telegram.warnings import PTBUserWarning
@@ -517,7 +517,9 @@ async def _set_public_bot_commands(application: Application, chat_id: int | None
         BotCommand("help", "Show help"),
     ]
     if chat_id is None:
+        # Apply to default and all private chats to avoid stale command scopes leaking admin commands.
         await application.bot.set_my_commands(commands)
+        await application.bot.set_my_commands(commands, scope=BotCommandScopeAllPrivateChats())
     else:
         await application.bot.set_my_commands(commands, scope=BotCommandScopeChat(chat_id=chat_id))
 
@@ -2873,6 +2875,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     role = user_role(user.id)
     db.upsert_user(user.id, user.full_name, role=role)
+
+    # Keep command menu scoped per chat so admin-only commands never appear for regular users.
+    if has_super_admin_access(user.id, context) or (is_admin(user.id) and not super_admin_access_enabled()):
+        await _set_admin_bot_commands(context.application, user.id)
+    else:
+        await _set_public_bot_commands(context.application, chat_id=user.id)
+
     _prime_clear_state(context)
     await send_start_banner(update, role, context)
 
@@ -4136,17 +4145,22 @@ async def view_orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
-def _can_view_admin_analytics(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    if not is_admin(user_id):
-        return False
-    if super_admin_access_enabled() and not has_super_admin_access(user_id, context):
-        return False
-    return True
+def _admin_analytics_access_state(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> str:
+    """Return allowed, login_required, or forbidden for admin analytics commands."""
+    if has_super_admin_access(user_id, context):
+        return "allowed"
+    if is_admin(user_id):
+        return "login_required" if super_admin_access_enabled() else "allowed"
+    return "forbidden"
 
 
 async def order_analysis(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    if not _can_view_admin_analytics(user.id, context):
+    access_state = _admin_analytics_access_state(user.id, context)
+    if access_state == "forbidden":
+        await update.effective_message.reply_text(format_unauthorized(), parse_mode="HTML")
+        return
+    if access_state == "login_required":
         await update.effective_message.reply_text("Run /admin and login first.")
         return
     report = db.order_analytics(limit=5)
@@ -4155,7 +4169,11 @@ async def order_analysis(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def waiter_analysis(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    if not _can_view_admin_analytics(user.id, context):
+    access_state = _admin_analytics_access_state(user.id, context)
+    if access_state == "forbidden":
+        await update.effective_message.reply_text(format_unauthorized(), parse_mode="HTML")
+        return
+    if access_state == "login_required":
         await update.effective_message.reply_text("Run /admin and login first.")
         return
     rows = db.waiter_performance(limit=30)
@@ -4164,7 +4182,11 @@ async def waiter_analysis(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def user_count(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    if not _can_view_admin_analytics(user.id, context):
+    access_state = _admin_analytics_access_state(user.id, context)
+    if access_state == "forbidden":
+        await update.effective_message.reply_text(format_unauthorized(), parse_mode="HTML")
+        return
+    if access_state == "login_required":
         await update.effective_message.reply_text("Run /admin and login first.")
         return
     users = db.list_user_ids()
@@ -4178,7 +4200,11 @@ async def user_count(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def order_progress(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    if not _can_view_admin_analytics(user.id, context):
+    access_state = _admin_analytics_access_state(user.id, context)
+    if access_state == "forbidden":
+        await update.effective_message.reply_text(format_unauthorized(), parse_mode="HTML")
+        return
+    if access_state == "login_required":
         await update.effective_message.reply_text("Run /admin and login first.")
         return
     rows = db.list_admin_order_progress(limit=80)
