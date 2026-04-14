@@ -528,7 +528,7 @@ def format_time_prompt(hall_name: str = "your location") -> str:
     return (
         f"🕐 <b>Delivery Time</b>\n\n"
         f"📍 Delivering to <b>{hall_name}</b>\n\n"
-        "Select your preferred delivery time slot:"
+        "Select your preferred delivery time slot between 12:00pm and 7:30pm:"
     )
 
 

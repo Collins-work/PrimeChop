@@ -134,9 +134,24 @@ ADMIN_CATALOG_PAGE_SIZE = 12
 ORDER_TIME_CALLBACK_PATTERN = r"^order:time:(?:\d{4}-\d{4}|\d{1,2}:\d{2}-\d{1,2}:\d{2})$"
 
 DELIVERY_TIME_SLOTS = [
-    ("17:00", "18:00"),
-    ("18:00", "18:30"),
-    ("18:30", "19:15"),
+    (f"{hour:02d}:{minute:02d}", f"{next_hour:02d}:{next_minute:02d}")
+    for hour, minute, next_hour, next_minute in (
+        (12, 0, 12, 30),
+        (12, 30, 13, 0),
+        (13, 0, 13, 30),
+        (13, 30, 14, 0),
+        (14, 0, 14, 30),
+        (14, 30, 15, 0),
+        (15, 0, 15, 30),
+        (15, 30, 16, 0),
+        (16, 0, 16, 30),
+        (16, 30, 17, 0),
+        (17, 0, 17, 30),
+        (17, 30, 18, 0),
+        (18, 0, 18, 30),
+        (18, 30, 19, 0),
+        (19, 0, 19, 30),
+    )
 ]
 
 # This conversation mixes callback queries and text input by design (room entry).
@@ -2488,12 +2503,14 @@ async def order_catalog_navigation_callback(update: Update, context: ContextType
 
     action = query.data.split(":", 1)[1]
     if action == "back_vendors":
+        context.user_data.pop("order_draft", None)
+        context.user_data.pop("item_selection", None)
         await query.edit_message_text(
             "🏪 <b>Choose a Vendor</b>\n\nSelect where you want to order from.",
             parse_mode="HTML",
             reply_markup=vendor_selection_keyboard(_get_order_vendor_rows()),
         )
-        return
+        return ConversationHandler.END
 
     if action == "back_items":
         draft = context.user_data.get("order_draft", {})
@@ -2520,7 +2537,7 @@ async def order_catalog_navigation_callback(update: Update, context: ContextType
             parse_mode="HTML",
             reply_markup=vendor_items_keyboard(items, vendor_id),
         )
-        return
+        return ORDER_ITEM
 
 
 def waiter_request_actions_keyboard(request_id: int) -> InlineKeyboardMarkup:
@@ -5411,7 +5428,11 @@ def main():
     order_flow_handler = ConversationHandler(
         entry_points=[CallbackQueryHandler(order_vendor_callback, pattern=r"^catalog:vendor:\d+$")],
         states={
-            ORDER_ITEM: [CallbackQueryHandler(order_item_callback, pattern=r"^catalog:item:\d+$")],
+            ORDER_ITEM: [
+                CallbackQueryHandler(order_vendor_callback, pattern=r"^catalog:vendor:\d+$"),
+                CallbackQueryHandler(order_item_callback, pattern=r"^catalog:item:\d+$"),
+                CallbackQueryHandler(order_catalog_navigation_callback, pattern=r"^catalog:(back_vendors|back_items)$"),
+            ],
             ORDER_HALL: [CallbackQueryHandler(order_hall_callback, pattern=r"^catalog:hall:\d+$")],
             ORDER_ROOM: [MessageHandler(filters.TEXT & ~filters.COMMAND, order_room_step)],
             ORDER_TIME: [CallbackQueryHandler(order_time_step, pattern=ORDER_TIME_CALLBACK_PATTERN)],
@@ -5456,7 +5477,6 @@ def main():
 
     app.add_handler(CallbackQueryHandler(admin_waiter_management_callback, pattern=r"^adminwm:.*$"))
     app.add_handler(CallbackQueryHandler(admin_panel_callback, pattern=r"^admin:.*$"))
-    app.add_handler(CallbackQueryHandler(order_catalog_navigation_callback, pattern=r"^catalog:(back_vendors|back_items)$"))
     app.add_handler(CallbackQueryHandler(catalog_item_quantity_callback, pattern=r"^catalog:(qty_inc|qty_dec)$"))
     app.add_handler(CallbackQueryHandler(catalog_add_current_callback, pattern=r"^catalog:add_(current|with_note|without_note)$"))
     app.add_handler(CallbackQueryHandler(cart_action_callback, pattern=r"^cart:(view|vendors|clear|checkout)$"))
