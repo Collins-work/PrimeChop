@@ -253,6 +253,139 @@ class Database:
                     ]
                 )
 
+    def _mirror_waiter_request_by_user_id(self, user_id: int):
+        """
+        Mirror latest waiter request/user state into optional waiter_registry table.
+        This keeps compatibility with deployments that bootstrap the legacy table.
+        """
+        with self.connection() as conn:
+            latest_request = conn.execute(
+                """
+                SELECT user_id, public_user_id, full_name, details, status, created_at, updated_at
+                FROM waiter_requests
+                WHERE user_id=?
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (user_id,),
+            ).fetchone()
+            user_row = conn.execute(
+                "SELECT user_id, full_name, waiter_code, waiter_online, waiter_verified, created_at, updated_at FROM users WHERE user_id=?",
+                (user_id,),
+            ).fetchone()
+
+            if not latest_request and not user_row:
+                return
+
+            full_name = ""
+            public_user_id = ""
+            registration_details = ""
+            status = "pending"
+            created_at = self.now_iso()
+            updated_at = self.now_iso()
+            waiter_code = ""
+            waiter_online = 0
+            waiter_verified = 0
+            is_active = 1
+
+            if latest_request:
+                full_name = latest_request["full_name"] or ""
+                public_user_id = latest_request["public_user_id"] or ""
+                registration_details = latest_request["details"] or ""
+                status = latest_request["status"] or "pending"
+                created_at = latest_request["created_at"] or created_at
+                updated_at = latest_request["updated_at"] or updated_at
+
+            if user_row:
+                full_name = user_row["full_name"] or full_name
+                waiter_code = user_row["waiter_code"] or ""
+                waiter_online = int(user_row["waiter_online"] or 0)
+                waiter_verified = int(user_row["waiter_verified"] or 0)
+                created_at = user_row["created_at"] or created_at
+                updated_at = user_row["updated_at"] or updated_at
+                if waiter_verified:
+                    status = "approved"
+
+            if status == "deleted":
+                is_active = 0
+
+            parsed_email = ""
+            parsed_phone = ""
+            parsed_gender = ""
+            for line in registration_details.splitlines():
+                lower = line.lower()
+                if lower.startswith("email:"):
+                    parsed_email = line.split(":", 1)[1].strip()
+                elif lower.startswith("phone:"):
+                    parsed_phone = line.split(":", 1)[1].strip()
+                elif lower.startswith("gender:"):
+                    parsed_gender = line.split(":", 1)[1].strip()
+
+            # The waiter_registry table is optional; update it only if it exists.
+            table_exists = conn.execute(
+                "SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='waiter_registry' LIMIT 1"
+            ).fetchone()
+            if not table_exists:
+                return
+
+            conn.execute(
+                """
+                INSERT INTO waiter_registry (
+                    telegram_user_id,
+                    full_name,
+                    email,
+                    phone,
+                    gender,
+                    public_user_id,
+                    waiter_code,
+                    status,
+                    is_active,
+                    waiter_online,
+                    waiter_verified,
+                    registration_details,
+                    created_at,
+                    updated_at,
+                    deleted_at,
+                    deleted_reason
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CASE WHEN ?='deleted' THEN ? ELSE NULL END, CASE WHEN ?='deleted' THEN 'waiter removed by admin' ELSE NULL END)
+                ON CONFLICT (telegram_user_id) DO UPDATE SET
+                    full_name=EXCLUDED.full_name,
+                    email=EXCLUDED.email,
+                    phone=EXCLUDED.phone,
+                    gender=EXCLUDED.gender,
+                    public_user_id=EXCLUDED.public_user_id,
+                    waiter_code=EXCLUDED.waiter_code,
+                    status=EXCLUDED.status,
+                    is_active=EXCLUDED.is_active,
+                    waiter_online=EXCLUDED.waiter_online,
+                    waiter_verified=EXCLUDED.waiter_verified,
+                    registration_details=EXCLUDED.registration_details,
+                    updated_at=EXCLUDED.updated_at,
+                    deleted_at=EXCLUDED.deleted_at,
+                    deleted_reason=EXCLUDED.deleted_reason
+                """,
+                (
+                    user_id,
+                    full_name,
+                    parsed_email,
+                    parsed_phone,
+                    parsed_gender,
+                    public_user_id or None,
+                    waiter_code or None,
+                    status,
+                    is_active,
+                    waiter_online,
+                    waiter_verified,
+                    registration_details,
+                    created_at,
+                    updated_at,
+                    status,
+                    updated_at,
+                    status,
+                ),
+            )
+
     def _refresh_orders_users_export(self):
         if not self._human_exports_enabled:
             return
