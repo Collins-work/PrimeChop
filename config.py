@@ -9,7 +9,9 @@ from dotenv import load_dotenv
 logger = logging.getLogger(__name__)
 
 
-load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env", override=True)
+# Keep real environment variables (Railway/Render) authoritative.
+# The local .env file only fills in values that are not already set.
+load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env", override=False)
 
 
 DEFAULT_ORDER_VENDORS = [
