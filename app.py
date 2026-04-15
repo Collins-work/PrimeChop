@@ -1816,14 +1816,50 @@ def _get_order_vendor_rows():
     if settings.order_vendors:
         vendor_ids_with_items = {int(v["id"]) for v in vendors_with_items}
         preferred_vendors = []
+        preferred_ids: set[int] = set()
         for name in settings.order_vendors:
             vendor = db.get_vendor_by_name(name)
             if vendor and int(vendor["id"]) in vendor_ids_with_items:
                 preferred_vendors.append(vendor)
-        if preferred_vendors:
-            return preferred_vendors
+                preferred_ids.add(int(vendor["id"]))
+
+        remaining_vendors = [
+            vendor
+            for vendor in vendors_with_items
+            if int(vendor["id"]) not in preferred_ids
+        ]
+        if preferred_vendors or remaining_vendors:
+            return [*preferred_vendors, *remaining_vendors]
 
     return vendors_with_items
+
+
+def _hydrate_catalog_session(context: ContextTypes.DEFAULT_TYPE, *, vendors: list | None = None) -> list:
+    """Cache active halls, vendors, and vendor items in the user's session."""
+    active_vendors = vendors if vendors is not None else _get_order_vendor_rows()
+    serialized_vendors: list[dict] = []
+    vendor_items: dict[str, list[dict]] = {}
+
+    for vendor in active_vendors:
+        vendor_id = int(vendor["id"])
+        vendor_name = str(vendor["name"])
+        serialized_vendors.append({"id": vendor_id, "name": vendor_name})
+
+        items = db.list_menu_items_by_vendor(vendor_id)
+        vendor_items[str(vendor_id)] = [
+            {
+                "id": int(item["id"]),
+                "name": str(item["name"]),
+                "price": int(item["price"] or 0),
+            }
+            for item in items
+        ]
+
+    context.user_data["delivery_halls"] = list(settings.delivery_halls)
+    context.user_data["catalog_vendors"] = serialized_vendors
+    context.user_data["catalog_vendor_items"] = vendor_items
+    context.user_data["catalog_synced_at"] = datetime.now().isoformat(timespec="seconds")
+    return active_vendors
 
 
 def _ensure_order_draft(context: ContextTypes.DEFAULT_TYPE) -> dict:
@@ -2056,7 +2092,7 @@ def _checkout_customer_email(user) -> str:
 
 
 async def _send_vendor_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    vendors = _get_order_vendor_rows()
+    vendors = _hydrate_catalog_session(context)
     if not vendors:
         await update.effective_message.reply_text(format_menu_empty(), parse_mode="HTML")
         return
@@ -2082,7 +2118,7 @@ async def _send_vendor_items(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 f"{vendor['name']} has no available items yet.\n\n"
                 "Admin needs to add products for this vendor before customers can order."
             ),
-            reply_markup=vendor_selection_keyboard(_get_order_vendor_rows()),
+            reply_markup=vendor_selection_keyboard(_hydrate_catalog_session(context)),
         )
         return ORDER_VENDOR
 
@@ -2514,7 +2550,7 @@ async def order_catalog_navigation_callback(update: Update, context: ContextType
         await query.edit_message_text(
             "🏪 <b>Choose a Vendor</b>\n\nSelect where you want to order from.",
             parse_mode="HTML",
-            reply_markup=vendor_selection_keyboard(_get_order_vendor_rows()),
+            reply_markup=vendor_selection_keyboard(_hydrate_catalog_session(context)),
         )
         return ConversationHandler.END
 
@@ -2525,7 +2561,7 @@ async def order_catalog_navigation_callback(update: Update, context: ContextType
             await query.edit_message_text(
                 "🏪 <b>Choose a Vendor</b>\n\nSelect where you want to order from.",
                 parse_mode="HTML",
-                reply_markup=vendor_selection_keyboard(_get_order_vendor_rows()),
+                reply_markup=vendor_selection_keyboard(_hydrate_catalog_session(context)),
             )
             return
         vendor = db.get_vendor(vendor_id)
@@ -2862,7 +2898,7 @@ async def _edit_or_send_callback_message(
 async def start_place_order_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    vendors = _get_order_vendor_rows()
+    vendors = _hydrate_catalog_session(context)
     if not vendors:
         await _edit_or_send_callback_message(query, format_menu_empty(), parse_mode="HTML")
         return
@@ -3002,6 +3038,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _set_public_bot_commands(context.application, chat_id=user.id)
 
     _prime_clear_state(context)
+    _hydrate_catalog_session(context)
     await send_start_banner(update, role, context)
 
 
@@ -3039,11 +3076,12 @@ async def cart_action_callback(update: Update, context: ContextTypes.DEFAULT_TYP
 
     action = query.data.split(":", 1)[1]
     if action == "vendors":
+        vendors = _hydrate_catalog_session(context)
         await _edit_or_send_callback_message(
             query,
             _render_vendor_menu_text(),
             parse_mode="HTML",
-            reply_markup=vendor_selection_keyboard(_get_order_vendor_rows()),
+            reply_markup=vendor_selection_keyboard(vendors),
         )
         return
 
@@ -4546,7 +4584,7 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    vendors = _get_order_vendor_rows()
+    vendors = _hydrate_catalog_session(context)
     if not vendors:
         await update.effective_message.reply_text(format_menu_empty(), parse_mode="HTML")
         return
@@ -4584,7 +4622,7 @@ async def order_vendor_callback(update: Update, context: ContextTypes.DEFAULT_TY
                 f"{vendor['name']} has no available items yet.\n\n"
                 "Admin needs to add products for this vendor before customers can order."
             ),
-            reply_markup=vendor_selection_keyboard(_get_order_vendor_rows()),
+            reply_markup=vendor_selection_keyboard(_hydrate_catalog_session(context)),
         )
         return ORDER_VENDOR
 
