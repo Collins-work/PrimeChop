@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import Set
 import os
 import logging
+import re
 
 from dotenv import load_dotenv
 
@@ -75,7 +76,19 @@ def _normalize_paystack_key(raw: str) -> str:
     value = _strip_wrapping_quotes(raw)
     if value.lower().startswith("bearer "):
         value = value[7:].strip()
+    # Recover the raw key if extra text/punctuation was accidentally pasted.
+    match = re.search(r"\b(?:sk|pk)_(?:live|test)_[A-Za-z0-9]+\b", value)
+    if match:
+        return match.group(0)
     return value
+
+
+def _first_nonempty_env(*names: str) -> str:
+    for name in names:
+        value = os.getenv(name, "")
+        if value and value.strip():
+            return value
+    return ""
 
 
 def _normalize_google_sheet_id(raw: str) -> str:
@@ -199,8 +212,16 @@ settings = Settings(
         "Hall Deborah",
     ],
     paystack_mode=_strip_wrapping_quotes(os.getenv("PAYSTACK_MODE", "mock")).lower(),
-    paystack_secret_key=_normalize_paystack_key(os.getenv("PAYSTACK_SECRET_KEY", "")),
-    paystack_public_key=_normalize_paystack_key(os.getenv("PAYSTACK_PUBLIC_KEY", "")),
+    paystack_secret_key=_normalize_paystack_key(_first_nonempty_env(
+        "PAYSTACK_SECRET_KEY",
+        "PAYSTACK_SECRET",
+        "PAYSTACK_LIVE_SECRET_KEY",
+    )),
+    paystack_public_key=_normalize_paystack_key(_first_nonempty_env(
+        "PAYSTACK_PUBLIC_KEY",
+        "PAYSTACK_PUBLIC",
+        "PAYSTACK_LIVE_PUBLIC_KEY",
+    )),
     paystack_currency=_strip_wrapping_quotes(os.getenv("PAYSTACK_CURRENCY", "NGN")),
     paystack_callback_url=_strip_wrapping_quotes(os.getenv("PAYSTACK_CALLBACK_URL", "")),
     paystack_initialize_url=_strip_wrapping_quotes(os.getenv(
