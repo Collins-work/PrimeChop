@@ -135,25 +135,12 @@ ADMIN_CATALOG_PAGE_SIZE = 12
 ORDER_TIME_CALLBACK_PATTERN = r"^order:time:(?:\d{4}-\d{4}|\d{1,2}:\d{2}-\d{1,2}:\d{2})$"
 
 DELIVERY_TIME_SLOTS = [
-    (f"{hour:02d}:{minute:02d}", f"{next_hour:02d}:{next_minute:02d}")
-    for hour, minute, next_hour, next_minute in (
-        (12, 0, 12, 30),
-        (12, 30, 13, 0),
-        (13, 0, 13, 30),
-        (13, 30, 14, 0),
-        (14, 0, 14, 30),
-        (14, 30, 15, 0),
-        (15, 0, 15, 30),
-        (15, 30, 16, 0),
-        (16, 0, 16, 30),
-        (16, 30, 17, 0),
-        (17, 0, 17, 30),
-        (17, 30, 18, 0),
-        (18, 0, 18, 30),
-        (18, 30, 19, 0),
-        (19, 0, 19, 30),
-    )
+    ("17:00", "18:00"),
+    ("18:00", "18:30"),
+    ("18:30", "19:45"),
 ]
+
+DELIVERY_SLOT_VISIBILITY_START_HOUR = 12
 
 # This conversation mixes callback queries and text input by design (room entry).
 # Keep per_message at default and silence the advisory warning.
@@ -1418,9 +1405,32 @@ def _hhmm_to_minutes(hhmm: str) -> int:
 
 
 def _available_delivery_slots(now: datetime | None = None) -> list[tuple[str, str]]:
-    current = now or datetime.now()
+    if now is None:
+        current = datetime.now(db.tz)
+    elif now.tzinfo is None:
+        current = now.replace(tzinfo=db.tz)
+    else:
+        current = now.astimezone(db.tz)
+
     current_minutes = current.hour * 60 + current.minute
+    visibility_start_minutes = DELIVERY_SLOT_VISIBILITY_START_HOUR * 60
+    if current_minutes < visibility_start_minutes:
+        return []
+
     return [slot for slot in DELIVERY_TIME_SLOTS if current_minutes < _hhmm_to_minutes(slot[1])]
+
+
+def _delivery_slots_unavailable_message(now: datetime | None = None) -> str:
+    if now is None:
+        current = datetime.now(db.tz)
+    elif now.tzinfo is None:
+        current = now.replace(tzinfo=db.tz)
+    else:
+        current = now.astimezone(db.tz)
+
+    if current.hour * 60 + current.minute < DELIVERY_SLOT_VISIBILITY_START_HOUR * 60:
+        return "Delivery time selection opens from 12:00pm. Please come back this afternoon."
+    return "No delivery time slots are available right now. Please try again tomorrow."
 
 
 def _format_delivery_time_label(start_hhmm: str, end_hhmm: str) -> str:
@@ -4885,7 +4895,7 @@ async def order_room_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not available_slots:
         context.user_data.pop("order_draft", None)
         await update.effective_message.reply_text(
-            "No delivery time slots are available right now. Please try again tomorrow.",
+            _delivery_slots_unavailable_message(),
         )
         return ConversationHandler.END
 
@@ -4937,7 +4947,7 @@ async def order_time_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return ORDER_TIME
 
         context.user_data.pop("order_draft", None)
-        await query.edit_message_text("No delivery time slots are available right now. Please try again tomorrow.")
+        await query.edit_message_text(_delivery_slots_unavailable_message())
         return ConversationHandler.END
 
     delivery_time = _format_delivery_time_label(start_hhmm, end_hhmm)
