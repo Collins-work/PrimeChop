@@ -2380,15 +2380,19 @@ async def checkout_payment_callback(update: Update, context: ContextTypes.DEFAUL
             subtotal=int(pending.get("subtotal") or max(0, amount - settings.service_fee_total)),
             service_fee=int(pending.get("service_fee") or settings.service_fee_total),
         )
-        order_payment_markup = mock_payment_actions_keyboard(
-            payment_url=payment_result.checkout_url,
-            tx_ref=payment_result.tx_ref,
-            payment_kind="order",
-            label="💳 Pay with Paystack",
-        )
-
-        if settings.paystack_mode == "mock":
-            order_payment_text += "\n\nℹ️ <b>Mock mode:</b> admin has been notified to confirm this payment."
+        order_payment_markup = None
+        if settings.paystack_mode == "live":
+            order_payment_markup = mock_payment_actions_keyboard(
+                payment_url=payment_result.checkout_url,
+                tx_ref=payment_result.tx_ref,
+                payment_kind="order",
+                label="💳 Pay with Paystack",
+            )
+        else:
+            order_payment_text += (
+                "\n\nℹ️ <b>Mock mode:</b> this payment is handled internally for testing. "
+                "No external checkout page is required."
+            )
 
         await _edit_or_send_callback_message(
             query,
@@ -3019,11 +3023,13 @@ async def initialize_topup_for_user(
     )
 
     text = format_topup_created(amount, result.tx_ref, settings.paystack_mode)
-    reply_markup = mock_payment_actions_keyboard(
-        payment_url=result.checkout_url,
-        tx_ref=result.tx_ref,
-        payment_kind="topup",
-    )
+    reply_markup = None
+    if settings.paystack_mode == "live":
+        reply_markup = mock_payment_actions_keyboard(
+            payment_url=result.checkout_url,
+            tx_ref=result.tx_ref,
+            payment_kind="topup",
+        )
     await context.bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup, parse_mode="HTML")
 
     if settings.paystack_mode == "mock":

@@ -707,9 +707,11 @@ def format_topup_created(amount: int, tx_ref: str, paystack_mode: str = "live") 
         f"<i>Tap below to open Paystack and complete your top up.</i>"
     )
     if paystack_mode == "mock":
-        text += (
-            f"\n\n{EMOJI_INFO} <i>Mock mode: admin has been notified to confirm this top up</i>"
-            f"\n<i>Command fallback:</i> /confirm_topup {tx_ref}"
+        text = (
+            f"{EMOJI_SUCCESS} <b>Top Up Request Created!</b>\n\n"
+            f"{EMOJI_MONEY} <b>Amount:</b> ₦{amount:,}\n"
+            f"<b>Reference:</b> {tx_ref}\n\n"
+            f"{EMOJI_INFO} <i>Mock mode is enabled. This request is processed internally for testing, so no external checkout page is opened.</i>"
         )
     return text
 

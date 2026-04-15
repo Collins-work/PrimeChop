@@ -91,6 +91,79 @@ def _first_nonempty_env(*names: str) -> str:
     return ""
 
 
+def _collect_env_values(*names: str) -> list[tuple[str, str]]:
+    values: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for name in names:
+        if name in seen:
+            continue
+        seen.add(name)
+        raw = os.getenv(name, "")
+        normalized = _normalize_paystack_key(raw)
+        if normalized:
+            values.append((name, normalized))
+    return values
+
+
+def _pick_paystack_key(primary_names: list[str], secondary_names: list[str], expected_prefix: str) -> tuple[str, str]:
+    primary = _collect_env_values(*primary_names)
+    secondary = _collect_env_values(*secondary_names)
+
+    for source, value in primary:
+        if value.lower().startswith(expected_prefix):
+            return value, source
+    for source, value in secondary:
+        if value.lower().startswith(expected_prefix):
+            return value, source
+    if primary:
+        return primary[0][1], primary[0][0]
+    if secondary:
+        return secondary[0][1], secondary[0][0]
+    return "", ""
+
+
+_paystack_secret_key, _paystack_secret_source = _pick_paystack_key(
+    primary_names=[
+        "PAYSTACK_SECRET_KEY",
+        "PAYSTACK_SECRET",
+        "PAYSTACK_LIVE_SECRET_KEY",
+        "PAYSTACK_SECRET_LIVE_KEY",
+        "PAYSTACK_LIVE_SECRET",
+    ],
+    secondary_names=[
+        "PAYSTACK_PUBLIC_KEY",
+        "PAYSTACK_PUBLIC",
+        "PAYSTACK_LIVE_PUBLIC_KEY",
+        "PAYSTACK_PUBLIC_LIVE_KEY",
+        "PAYSTACK_LIVE_PUBLIC",
+    ],
+    expected_prefix="sk_",
+)
+
+_paystack_public_key, _paystack_public_source = _pick_paystack_key(
+    primary_names=[
+        "PAYSTACK_PUBLIC_KEY",
+        "PAYSTACK_PUBLIC",
+        "PAYSTACK_LIVE_PUBLIC_KEY",
+        "PAYSTACK_PUBLIC_LIVE_KEY",
+        "PAYSTACK_LIVE_PUBLIC",
+    ],
+    secondary_names=[
+        "PAYSTACK_SECRET_KEY",
+        "PAYSTACK_SECRET",
+        "PAYSTACK_LIVE_SECRET_KEY",
+        "PAYSTACK_SECRET_LIVE_KEY",
+        "PAYSTACK_LIVE_SECRET",
+    ],
+    expected_prefix="pk_",
+)
+
+if _paystack_secret_key.lower().startswith("pk_") and _paystack_public_key.lower().startswith("sk_"):
+    _paystack_secret_key, _paystack_public_key = _paystack_public_key, _paystack_secret_key
+    _paystack_secret_source, _paystack_public_source = _paystack_public_source, _paystack_secret_source
+    logger.warning("Detected swapped Paystack keys in environment; auto-corrected secret/public mapping.")
+
+
 def _normalize_google_sheet_id(raw: str) -> str:
     value = (raw or "").strip()
     if not value:
@@ -212,16 +285,8 @@ settings = Settings(
         "Hall Deborah",
     ],
     paystack_mode=_strip_wrapping_quotes(os.getenv("PAYSTACK_MODE", "mock")).lower(),
-    paystack_secret_key=_normalize_paystack_key(_first_nonempty_env(
-        "PAYSTACK_SECRET_KEY",
-        "PAYSTACK_SECRET",
-        "PAYSTACK_LIVE_SECRET_KEY",
-    )),
-    paystack_public_key=_normalize_paystack_key(_first_nonempty_env(
-        "PAYSTACK_PUBLIC_KEY",
-        "PAYSTACK_PUBLIC",
-        "PAYSTACK_LIVE_PUBLIC_KEY",
-    )),
+    paystack_secret_key=_paystack_secret_key,
+    paystack_public_key=_paystack_public_key,
     paystack_currency=_strip_wrapping_quotes(os.getenv("PAYSTACK_CURRENCY", "NGN")),
     paystack_callback_url=_strip_wrapping_quotes(os.getenv("PAYSTACK_CALLBACK_URL", "")),
     paystack_initialize_url=_strip_wrapping_quotes(os.getenv(
@@ -284,6 +349,11 @@ if (
 if settings.paystack_mode == "live":
     secret_key = settings.paystack_secret_key.strip()
     public_key = settings.paystack_public_key.strip()
+
+    if _paystack_secret_source:
+        logger.info("Paystack secret key source: %s", _paystack_secret_source)
+    if _paystack_public_source:
+        logger.info("Paystack public key source: %s", _paystack_public_source)
 
     if not secret_key:
         logger.warning("PAYSTACK_SECRET_KEY is empty while PAYSTACK_MODE=live.")
