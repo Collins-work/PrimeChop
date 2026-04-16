@@ -486,6 +486,16 @@ class Database:
                     ]
                 )
 
+    def _mirror_order_by_id(self, order_id: int):
+        """Compatibility hook for legacy mirror flows.
+
+        Some call sites expect this method to exist after creating/updating orders.
+        For PostgreSQL deployments we already export order state to the human-readable
+        tracker, so this hook safely refreshes that export and avoids runtime crashes.
+        """
+        _ = order_id
+        self._refresh_orders_users_export()
+
     def refresh_human_readable_exports(self):
         if not self._human_exports_enabled:
             return

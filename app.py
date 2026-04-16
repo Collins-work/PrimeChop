@@ -2151,6 +2151,8 @@ def _build_cart_checkout_draft(context: ContextTypes.DEFAULT_TYPE) -> Optional[d
     if not rows:
         return None
 
+    primary_item_id = int(rows[0]["item"]["id"])
+
     vendor_names = {
         (db.get_vendor(int(row["item"]["vendor_id"]))["name"] if row["item"]["vendor_id"] and db.get_vendor(int(row["item"]["vendor_id"])) else settings.cafeteria_name)
         for row in rows
@@ -2162,7 +2164,7 @@ def _build_cart_checkout_draft(context: ContextTypes.DEFAULT_TYPE) -> Optional[d
         "from_cart": True,
         "vendor_name": vendor_name,
         "item_name": summary,
-        "item_id": 0,
+        "item_id": primary_item_id,
         "amount": total,
         "order_details": details,
     }
@@ -2364,21 +2366,31 @@ async def checkout_payment_callback(update: Update, context: ContextTypes.DEFAUL
             return
 
         wallet_tx_ref = generate_wallet_tx_ref(user.id)
-        order_id = db.create_order_paid_with_wallet(
-            order_ref=requested_order_ref,
-            user_id=user.id,
-            item_id=int(pending["item_id"]),
-            cafeteria_name=pending["vendor_name"],
-            amount=amount,
-            order_details=pending.get("order_details", ""),
-            room_number=pending["room_number"],
-            delivery_time=pending.get("delivery_time", ""),
-            hall_name=pending["hall_name"],
-            service_fee_total=settings.service_fee_total,
-            waiter_share=waiter_share,
-            platform_share=platform_share,
-            wallet_tx_ref=wallet_tx_ref,
-        )
+        try:
+            order_id = db.create_order_paid_with_wallet(
+                order_ref=requested_order_ref,
+                user_id=user.id,
+                item_id=int(pending["item_id"]),
+                cafeteria_name=pending["vendor_name"],
+                amount=amount,
+                order_details=pending.get("order_details", ""),
+                room_number=pending["room_number"],
+                delivery_time=pending.get("delivery_time", ""),
+                hall_name=pending["hall_name"],
+                service_fee_total=settings.service_fee_total,
+                waiter_share=waiter_share,
+                platform_share=platform_share,
+                wallet_tx_ref=wallet_tx_ref,
+            )
+        except Exception as exc:
+            logger.exception("Wallet checkout failed while creating order")
+            await _edit_or_send_callback_message(
+                query,
+                format_error_message(f"Unable to complete wallet checkout right now: {exc}"),
+                parse_mode="HTML",
+                reply_markup=payment_method_keyboard(requested_order_ref, wallet_balance, amount),
+            )
+            return
         if not order_id:
             refreshed = db.get_user(user.id)
             refreshed_balance = int(refreshed["wallet_balance"] or 0) if refreshed else 0
@@ -2430,26 +2442,36 @@ async def checkout_payment_callback(update: Update, context: ContextTypes.DEFAUL
             )
             return
 
-        order_id = db.create_order(
-            order_ref=requested_order_ref,
-            customer_id=user.id,
-            item_id=int(pending["item_id"]),
-            cafeteria_name=pending["vendor_name"],
-            amount=amount,
-            order_details=pending.get("order_details", ""),
-            room_number=pending["room_number"],
-            delivery_time=pending.get("delivery_time", ""),
-            hall_name=pending["hall_name"],
-            status="pending_payment",
-            payment_method=payments.provider_name(),
-            payment_provider=payments.provider_name(),
-            payment_tx_ref=payment_result.tx_ref,
-            payment_link=payment_result.checkout_url,
-            service_fee_total=settings.service_fee_total,
-            waiter_share=waiter_share,
-            platform_share=platform_share,
-        )
-        _audit_order_event(db.get_order(order_id), event="order_created", payment_status="pending")
+        try:
+            order_id = db.create_order(
+                order_ref=requested_order_ref,
+                customer_id=user.id,
+                item_id=int(pending["item_id"]),
+                cafeteria_name=pending["vendor_name"],
+                amount=amount,
+                order_details=pending.get("order_details", ""),
+                room_number=pending["room_number"],
+                delivery_time=pending.get("delivery_time", ""),
+                hall_name=pending["hall_name"],
+                status="pending_payment",
+                payment_method=payments.provider_name(),
+                payment_provider=payments.provider_name(),
+                payment_tx_ref=payment_result.tx_ref,
+                payment_link=payment_result.checkout_url,
+                service_fee_total=settings.service_fee_total,
+                waiter_share=waiter_share,
+                platform_share=platform_share,
+            )
+            _audit_order_event(db.get_order(order_id), event="order_created", payment_status="pending")
+        except Exception as exc:
+            logger.exception("Paystack checkout failed while creating pending order")
+            await _edit_or_send_callback_message(
+                query,
+                format_error_message(f"Payment initialized but order setup failed: {exc}"),
+                parse_mode="HTML",
+                reply_markup=payment_method_keyboard(requested_order_ref, wallet_balance, amount),
+            )
+            return
         context.user_data.pop("pending_checkout", None)
         if pending.get("from_cart"):
             context.user_data.pop("cart", None)
