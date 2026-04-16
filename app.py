@@ -50,6 +50,7 @@ from ui import (
     BTN_PLACE_ORDER,
     BTN_EXIT_WAITER_MODE,
     BTN_VIEW_ORDERS,
+    BTN_COMPLETE_ORDER,
     BTN_WALLET,
     BTN_TERMS,
     BTN_VIEW_CART,
@@ -545,6 +546,7 @@ async def _set_public_bot_commands(application: Application, chat_id: int | None
         BotCommand("topup", "Top up wallet balance"),
         BotCommand("menu", "Open food menu"),
         BotCommand("help", "Show help"),
+        BotCommand("complete", "Mark a claimed order completed"),
     ]
     if chat_id is None:
         # Apply to default and all private chats to avoid stale command scopes leaking admin commands.
@@ -5301,6 +5303,9 @@ async def home_button_router(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await wallet(update, context)
         return
     if text == BTN_VIEW_ORDERS or normalized in {"view orders", "order book", "/view_orders"}:
+        await view_orders(update, context)
+        return
+    if text == BTN_COMPLETE_ORDER or normalized in {"complete order", "mark complete", "/complete"}:
         await view_orders(update, context)
         return
     if text == BTN_EXIT_WAITER_MODE or normalized in {"exit waiter mode", "switch to customer", "/waiter_logout"}:

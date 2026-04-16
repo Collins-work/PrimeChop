@@ -52,6 +52,7 @@ BTN_PRIME_EXIT = "🏠 Exit Prime"
 BTN_WAITER_ONLINE = f"{EMOJI_ONLINE} Go Online"
 BTN_WAITER_OFFLINE = f"{EMOJI_OFFLINE} Go Offline"
 BTN_VIEW_ORDERS = "📦 View Orders"
+BTN_COMPLETE_ORDER = "✅ Complete Order"
 BTN_EXIT_WAITER_MODE = "🚪 Exit Waiter Mode"
 BTN_ADMIN_ADDITEM = f"{EMOJI_ADD} Add Item"
 
@@ -64,6 +65,7 @@ def home_keyboard(role: str) -> ReplyKeyboardMarkup:
             [KeyboardButton(BTN_VIEW_ORDERS)],
             [KeyboardButton(BTN_WAITER_ONLINE), KeyboardButton(BTN_WAITER_OFFLINE)],
             [KeyboardButton(BTN_ORDER_HISTORY), KeyboardButton(BTN_CUSTOMER_SUPPORT)],
+            [KeyboardButton(BTN_COMPLETE_ORDER)],
             [KeyboardButton(BTN_PRIME)],
             [KeyboardButton(BTN_EXIT_WAITER_MODE)],
         ]
