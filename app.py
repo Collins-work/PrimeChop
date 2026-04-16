@@ -5595,9 +5595,11 @@ def main():
     logger.info("✅ Event loop ready")
 
     async def post_init(application: Application):
-        await application.bot.set_my_description("PrimeChop food ordering and delivery bot.")
+        await application.bot.set_my_description(
+            "PrimeChop helps students browse campus vendors, order meals, top up wallet, pay securely, and track deliveries to their hall in real time."
+        )
         await application.bot.set_my_short_description(
-            "Fast food ordering and delivery updates."
+            "Order meals, pay, and track delivery on campus."
         )
         await _set_public_bot_commands(application)
 
