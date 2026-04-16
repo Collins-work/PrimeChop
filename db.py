@@ -964,6 +964,19 @@ class Database:
                 (limit,),
             ).fetchall()
 
+    def get_latest_waiter_request(self, user_id: int) -> Optional[sqlite3.Row]:
+        with self.connection() as conn:
+            return conn.execute(
+                """
+                SELECT *
+                FROM waiter_requests
+                WHERE user_id=?
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (user_id,),
+            ).fetchone()
+
     def approve_waiter_request(
         self,
         request_id: int,

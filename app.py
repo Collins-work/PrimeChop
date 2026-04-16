@@ -142,6 +142,22 @@ DELIVERY_TIME_SLOTS = [
 
 DELIVERY_SLOT_VISIBILITY_START_HOUR = 12
 
+FEMALE_ONLY_HALLS = {
+    "hall mary",
+    "hall esther",
+    "hall dorcas",
+    "hall lydia",
+    "hall deborah",
+}
+
+MALE_ONLY_HALLS = {
+    "hall john",
+    "hall paul",
+    "hall peter",
+    "hall joseph",
+    "hall daniel",
+}
+
 # This conversation mixes callback queries and text input by design (room entry).
 # Keep per_message at default and silence the advisory warning.
 warnings.filterwarnings(
@@ -1384,6 +1400,77 @@ def is_waiter(user_id: int) -> bool:
     return bool(row and row["role"] == "waiter" and row["waiter_verified"] == 1)
 
 
+def _normalized_hall_name(hall_name: str) -> str:
+    return " ".join((hall_name or "").strip().split()).casefold()
+
+
+def _required_waiter_gender_for_hall(hall_name: str) -> str | None:
+    hall = _normalized_hall_name(hall_name)
+    if hall in FEMALE_ONLY_HALLS:
+        return "female"
+    if hall in MALE_ONLY_HALLS:
+        return "male"
+    return None
+
+
+def _extract_waiter_gender_from_details(details: str) -> str:
+    for raw_line in (details or "").splitlines():
+        line = raw_line.strip()
+        if not line or ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        if key.strip().casefold() != "gender":
+            continue
+        normalized = value.strip().casefold()
+        if normalized in {"male", "female"}:
+            return normalized
+    return ""
+
+
+def _waiter_gender(user_id: int) -> str:
+    row = db.get_user(user_id)
+    if row and "gender" in row:
+        normalized = str(row["gender"] or "").strip().casefold()
+        if normalized in {"male", "female"}:
+            return normalized
+
+    latest_request = db.get_latest_waiter_request(user_id)
+    if not latest_request:
+        return ""
+
+    details = latest_request["details"] or ""
+    normalized = _extract_waiter_gender_from_details(details)
+    if normalized:
+        return normalized
+
+    parsed, _ = _parse_waiter_registration_details(details)
+    if parsed:
+        value = parsed.get("gender", "").strip().casefold()
+        if value in {"male", "female"}:
+            return value
+    return ""
+
+
+def _waiter_can_receive_hall(waiter_gender: str, hall_name: str) -> bool:
+    required_gender = _required_waiter_gender_for_hall(hall_name)
+    if not required_gender:
+        return True
+    return waiter_gender == required_gender
+
+
+def _filter_available_orders_for_waiter(waiter_gender: str, rows: list) -> list:
+    return [row for row in rows if _waiter_can_receive_hall(waiter_gender, row["hall_name"] or "")]
+
+
+def _filter_active_board_for_waiter(waiter_gender: str, rows: list) -> list:
+    visible_rows = []
+    for row in rows:
+        if row["status"] == "pending_waiter" and not _waiter_can_receive_hall(waiter_gender, row["hall_name"] or ""):
+            continue
+        visible_rows.append(row)
+    return visible_rows
+
+
 def service_fee_split(total: int, mode: str) -> tuple[int, int]:
     if mode == "waiter300":
         return 300, max(0, total - 300)
@@ -2456,8 +2543,13 @@ async def _dispatch_paid_order_via_bot(order_row, bot: Bot):
         order_details=order["order_details"] or "",
     )
     keyboard = order_claim_keyboard(order["id"])
+    required_gender = _required_waiter_gender_for_hall(hall_name)
 
     for waiter in online_waiters:
+        if required_gender:
+            waiter_gender = _waiter_gender(int(waiter["user_id"]))
+            if waiter_gender != required_gender:
+                continue
         await bot.send_message(
             chat_id=waiter["user_id"],
             text=waiter_text,
@@ -4307,13 +4399,17 @@ async def view_orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.effective_message.reply_text(format_unauthorized(), parse_mode="HTML")
         return
 
+    waiter_gender = _waiter_gender(user.id)
+
     active_orders = db.list_waiter_active_orders(limit=40)
+    active_orders = _filter_active_board_for_waiter(waiter_gender, active_orders)
     await update.effective_message.reply_text(
         format_waiter_active_order_board(active_orders),
         parse_mode="HTML",
     )
 
     available_orders = db.list_unclaimed_paid_orders(limit=20)
+    available_orders = _filter_available_orders_for_waiter(waiter_gender, available_orders)
     await update.effective_message.reply_text(
         format_waiter_order_book(available_orders),
         parse_mode="HTML",
@@ -4982,6 +5078,26 @@ async def claim_order_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     db.upsert_user(waiter.id, waiter.full_name, role="waiter")
 
     order_id = int(query.data.split(":")[1])
+    order = db.get_order(order_id)
+    if not order:
+        await query.answer("Order not found.", show_alert=True)
+        return
+
+    waiter_gender = _waiter_gender(waiter.id)
+    required_gender = _required_waiter_gender_for_hall(order["hall_name"] or "")
+    if required_gender and waiter_gender != required_gender:
+        if waiter_gender in {"male", "female"}:
+            await query.answer(
+                f"This order is reserved for {required_gender.title()} waiters.",
+                show_alert=True,
+            )
+        else:
+            await query.answer(
+                "Your waiter profile is missing gender details. Contact admin.",
+                show_alert=True,
+            )
+        return
+
     claimed = db.claim_order(order_id, waiter.id, settings.default_delivery_eta_minutes)
 
     if not claimed:
