@@ -1888,7 +1888,6 @@ class Database:
     ) -> Optional[int]:
         now = self.now_iso()
         with self.connection() as conn:
-            conn.execute("BEGIN IMMEDIATE")
             debit = conn.execute(
                 """
                 UPDATE users
