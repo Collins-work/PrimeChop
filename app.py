@@ -5,6 +5,7 @@ import hashlib
 import hmac
 import json
 import logging
+import math
 import operator
 import random
 import re
@@ -1479,6 +1480,12 @@ def service_fee_split(total: int, mode: str) -> tuple[int, int]:
     return total // 2, total - (total // 2)
 
 
+def calculate_dynamic_service_fee(order_amount: int) -> int:
+    amount = max(0, int(order_amount))
+    paystack_charge = math.ceil((0.02 * amount) + 100)
+    return 500 + min(2000, paystack_charge)
+
+
 def normalize_room(room_text: str) -> str | None:
     room = (room_text or "").strip().upper().replace(" ", "")
     if re.fullmatch(r"[A-H]\d{3}", room):
@@ -2269,7 +2276,8 @@ async def _finalize_order_checkout(update: Update, context: ContextTypes.DEFAULT
     room_number = draft["room_number"]
     delivery_time = draft.get("delivery_time", "")
     subtotal = int(draft["amount"])
-    amount = subtotal + settings.service_fee_total
+    service_fee = calculate_dynamic_service_fee(subtotal)
+    amount = subtotal + service_fee
     user_row = db.get_user(user.id)
     wallet_balance = int(user_row["wallet_balance"] or 0) if user_row else 0
 
@@ -2282,7 +2290,7 @@ async def _finalize_order_checkout(update: Update, context: ContextTypes.DEFAULT
         "delivery_time": delivery_time,
         "amount": amount,
         "subtotal": subtotal,
-        "service_fee": settings.service_fee_total,
+        "service_fee": service_fee,
         "item_id": int(draft["item_id"]),
         "order_details": draft.get("order_details", ""),
         "from_cart": bool(draft.get("from_cart", False)),
@@ -2297,7 +2305,7 @@ async def _finalize_order_checkout(update: Update, context: ContextTypes.DEFAULT
         amount=amount,
         wallet_balance=wallet_balance,
         subtotal=subtotal,
-        service_fee=settings.service_fee_total,
+        service_fee=service_fee,
         delivery_time=delivery_time,
     )
     if draft.get("order_details"):
@@ -2340,8 +2348,12 @@ async def checkout_payment_callback(update: Update, context: ContextTypes.DEFAUL
     user_row = db.get_user(user.id)
     wallet_balance = int(user_row["wallet_balance"] or 0) if user_row else 0
 
+    service_fee_total = int(
+        pending.get("service_fee")
+        or calculate_dynamic_service_fee(int(pending.get("subtotal") or 0))
+    )
     waiter_share, platform_share = service_fee_split(
-        settings.service_fee_total,
+        service_fee_total,
         settings.service_fee_split_mode,
     )
 
@@ -2377,7 +2389,7 @@ async def checkout_payment_callback(update: Update, context: ContextTypes.DEFAUL
                 room_number=pending["room_number"],
                 delivery_time=pending.get("delivery_time", ""),
                 hall_name=pending["hall_name"],
-                service_fee_total=settings.service_fee_total,
+                service_fee_total=service_fee_total,
                 waiter_share=waiter_share,
                 platform_share=platform_share,
                 wallet_tx_ref=wallet_tx_ref,
@@ -2458,7 +2470,7 @@ async def checkout_payment_callback(update: Update, context: ContextTypes.DEFAUL
                 payment_provider=payments.provider_name(),
                 payment_tx_ref=payment_result.tx_ref,
                 payment_link=payment_result.checkout_url,
-                service_fee_total=settings.service_fee_total,
+                service_fee_total=service_fee_total,
                 waiter_share=waiter_share,
                 platform_share=platform_share,
             )
@@ -2486,8 +2498,8 @@ async def checkout_payment_callback(update: Update, context: ContextTypes.DEFAUL
             room_number=pending["room_number"],
             amount=amount,
             payment_provider=payments.provider_name(),
-            subtotal=int(pending.get("subtotal") or max(0, amount - settings.service_fee_total)),
-            service_fee=int(pending.get("service_fee") or settings.service_fee_total),
+            subtotal=int(pending.get("subtotal") or max(0, amount - service_fee_total)),
+            service_fee=int(pending.get("service_fee") or service_fee_total),
         )
         order_payment_markup = None
         if settings.paystack_mode == "live":
