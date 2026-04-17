@@ -3744,7 +3744,8 @@ async def admin_waiter_management_callback(update: Update, context: ContextTypes
         await query.answer("Only admins can use waiter management.", show_alert=True)
         return
 
-    action = query.data.split(":", 1)[1]
+    parts = query.data.split(":")
+    action = parts[1] if len(parts) > 1 else ""
     if action == "menu":
         await _edit_or_send_callback_message(
             query,
@@ -3771,9 +3772,9 @@ async def admin_waiter_management_callback(update: Update, context: ContextTypes
         if active_impersonation:
             current = db.get_user(active_impersonation)
             if current:
+                current_code = current["waiter_code"] or f"UID{current['user_id']}"
                 lines.append(
-                    f"Current session: <b>{current['full_name']}</b> "
-                    f"[{current['waiter_code'] or f'UID{current['user_id']}'}]"
+                    f"Current session: <b>{current['full_name']}</b> [{current_code}]"
                 )
         lines.append("")
         lines.append("Choose the waiter account you want this admin session to act as.")
@@ -5828,6 +5829,18 @@ def bootstrap_menu_if_empty():
         db.sync_vendor_menu(vendor["id"], menu_items, settings.placeholder_image_url)
 
 
+def reconcile_fixed_menu_vendors():
+    """Ensure fixed vendors exist and restore fixed items only for vendors with no active menu."""
+    db.seed_vendors(settings.order_vendors)
+    restored: list[str] = []
+    for vendor_name, menu_items in FIXED_VENDOR_PRODUCTS.items():
+        vendor = db.upsert_vendor(vendor_name)
+        if db.count_active_items_for_vendor(int(vendor["id"])) == 0:
+            db.sync_vendor_menu(vendor["id"], menu_items, settings.placeholder_image_url)
+            restored.append(vendor_name)
+    return restored
+
+
 async def log_error(update: object, context: ContextTypes.DEFAULT_TYPE):
     logger.error("Unhandled exception while processing update: %s", context.error)
 
@@ -5889,6 +5902,12 @@ def main():
         logger.info("✅ Menu bootstrapped")
     else:
         logger.info(f"✅ Menu already has {vendor_count} vendors, skipping bootstrap")
+
+    restored_vendors = reconcile_fixed_menu_vendors()
+    if restored_vendors:
+        logger.info("✅ Restored fixed vendor menus: %s", ", ".join(restored_vendors))
+    else:
+        logger.info("✅ Fixed vendor menus already healthy")
     
     logger.info("Setting up Paystack callback server...")
     start_paystack_callback_server()
