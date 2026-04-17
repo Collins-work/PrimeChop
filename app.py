@@ -2896,6 +2896,15 @@ def waiter_complete_list_keyboard(orders: list) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows)
 
 
+def waiter_claimed_order_actions_keyboard(order_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("✅ Mark Completed", callback_data=f"complete_claim:{order_id}")],
+            [InlineKeyboardButton("↩️ Abandon Order", callback_data=f"abandon_claim:{order_id}")],
+        ]
+    )
+
+
 def order_rating_keyboard(order_id: int) -> InlineKeyboardMarkup:
     rows = [
         [
@@ -5247,6 +5256,7 @@ async def claim_order_callback(update: Update, context: ContextTypes.DEFAULT_TYP
                 eta_due_at=eta_due_text,
             ),
             parse_mode="HTML",
+            reply_markup=waiter_claimed_order_actions_keyboard(order_id),
         )
 
         waiter_gender = _waiter_gender(waiter.id)
@@ -5297,6 +5307,54 @@ async def waiter_complete_callback(update: Update, context: ContextTypes.DEFAULT
         parse_mode="HTML",
         reply_markup=order_rating_keyboard(order_id),
     )
+
+
+async def waiter_abandon_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    waiter = query.from_user
+    if not is_waiter(waiter.id):
+        await query.answer("Only registered waiters can abandon claimed orders.", show_alert=True)
+        return
+
+    order_id = int(query.data.split(":")[1])
+    ok = db.abandon_order(order_id, waiter.id)
+    if not ok:
+        await query.answer("Unable to abandon this order.", show_alert=True)
+        return
+
+    order = db.get_order(order_id)
+    if order:
+        _audit_order_event(order, event="order_abandoned", payment_status="confirmed")
+        try:
+            await context.bot.send_message(
+                chat_id=order["customer_id"],
+                text=(
+                    f"ℹ️ <b>Order #{order['order_ref'] or order_id} Update</b>\n\n"
+                    "Your delivery is being reassigned to another waiter.\n"
+                    "Please hold on while a waiter claims it."
+                ),
+                parse_mode="HTML",
+            )
+        except Exception:
+            logger.exception("Unable to notify customer about order reassignment for order %s", order_id)
+
+    await query.edit_message_text(
+        f"↩️ Order #{order['order_ref'] if order and order['order_ref'] else order_id} abandoned and returned to the waiter queue.",
+        parse_mode="HTML",
+    )
+
+    waiter_gender = _waiter_gender(waiter.id)
+    available_orders = db.list_unclaimed_paid_orders(limit=20)
+    available_orders = _filter_available_orders_for_waiter(waiter_gender, available_orders)
+    if available_orders:
+        await context.bot.send_message(
+            chat_id=waiter.id,
+            text=format_waiter_order_book(available_orders),
+            parse_mode="HTML",
+            reply_markup=waiter_claim_list_keyboard(available_orders),
+        )
 
 
 async def order_rating_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -5814,6 +5872,7 @@ def main():
     app.add_handler(CallbackQueryHandler(waiter_portal_callback, pattern=r"^waiter_portal:(login|register)$"))
     app.add_handler(CallbackQueryHandler(claim_order_callback, pattern=r"^claim:\d+$"))
     app.add_handler(CallbackQueryHandler(waiter_complete_callback, pattern=r"^complete_claim:\d+$"))
+    app.add_handler(CallbackQueryHandler(waiter_abandon_callback, pattern=r"^abandon_claim:\d+$"))
     app.add_handler(CallbackQueryHandler(order_rating_callback, pattern=r"^rate:\d+:[1-5]$"))
     app.add_handler(CallbackQueryHandler(mock_payment_confirm_callback, pattern=r"^payconfirm:(topup|order):[A-Za-z0-9_]+$"))
     app.add_handler(CallbackQueryHandler(topup_preset_callback, pattern=r"^topup:\d+$"))

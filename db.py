@@ -1773,6 +1773,28 @@ class Database:
             return True
         return False
 
+    def abandon_order(self, order_id: int, waiter_id: int) -> bool:
+        now = self.now_iso()
+        with self.connection() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE orders
+                SET waiter_id=NULL,
+                    status='pending_waiter',
+                    accepted_at=NULL,
+                    eta_minutes=NULL,
+                    eta_due_at=NULL,
+                    updated_at=?
+                WHERE id=? AND waiter_id=? AND status='claimed'
+                """,
+                (now, order_id, waiter_id),
+            )
+        if cursor.rowcount == 1:
+            self._refresh_orders_users_export()
+            self._mirror_order_by_id(int(order_id))
+            return True
+        return False
+
     def submit_order_rating(self, order_id: int, customer_id: int, rating: int) -> bool:
         now = self.now_iso()
         with self.connection() as conn:
