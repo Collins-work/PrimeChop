@@ -1336,6 +1336,16 @@ FIXED_VENDOR_PRODUCTS: dict[str, list[tuple[str, int]]] = {
         ("Egg sauce", 800),
         ("Gizzard", 500),
     ],
+    "Yamarita": [
+        ("Yamarita classic", 1500),
+        ("Yamarita with egg", 1800),
+        ("Yamarita with sausage", 2000),
+        ("Yamarita with beef", 2000),
+        ("Yamarita with fish", 2300),
+        ("Yamarita with chicken", 2800),
+        ("Yamarita with ponmo", 1700),
+        ("Yamarita special", 3000),
+    ],
     "Yam and fish": [
         ("Half fish", 1200),
         ("Full fish", 3000),
