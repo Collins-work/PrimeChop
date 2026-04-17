@@ -252,6 +252,7 @@ class Settings:
     prime_ai_model: str
     prime_ai_timeout_seconds: float
     default_delivery_eta_minutes: int
+    allow_order_history_purge: bool
 
 
 settings = Settings(
@@ -331,6 +332,7 @@ settings = Settings(
     prime_ai_model=os.getenv("PRIME_AI_MODEL", "openai/gpt-4o-mini").strip(),
     prime_ai_timeout_seconds=max(5.0, float(os.getenv("PRIME_AI_TIMEOUT_SECONDS", "20"))),
     default_delivery_eta_minutes=max(8, int(os.getenv("DEFAULT_DELIVERY_ETA_MINUTES", "25"))),
+    allow_order_history_purge=_parse_bool(os.getenv("ALLOW_ORDER_HISTORY_PURGE", "false"), default=False),
 )
 
 if not settings.telegram_bot_token:

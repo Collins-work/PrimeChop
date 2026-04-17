@@ -26,7 +26,8 @@ Then edit `.env`.
 - `ADMIN_IDS` = comma-separated Telegram user IDs
 - `ADMIN_PHONE_NUMBERS` = comma-separated admin phone numbers for /admin verification (example: `+2349116002889,+2348127812333`)
 - `WAITER_IDS` = comma-separated Telegram user IDs for waiters
-- `DB_PATH` = SQLite file path for app data (example on Render disk: `/var/data/primechop.db`)
+- `DATABASE_URL` = PostgreSQL connection URL (recommended for durable production storage)
+- Optional fallback vars if you do not set `DATABASE_URL`: `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_DB`
 - `BOT_TIMEZONE=Africa/Lagos`
 - `CAFETERIA_NAME=Cafeteria 1`
 - `ORDER_VENDORS` = comma-separated vendor names shown during ordering
@@ -61,6 +62,11 @@ Service fee:
 Delivery tracker:
 - `DEFAULT_DELIVERY_ETA_MINUTES=25` (used when a waiter accepts an order)
 
+Data retention safety:
+- `ALLOW_ORDER_HISTORY_PURGE=false` (default, recommended)
+- With this default, order history cannot be hard-deleted from bot commands/admin UI.
+- Keep this `false` to preserve all orders and wallet top-up records over time.
+
 ## 3) Run
 
 ```powershell
@@ -78,9 +84,9 @@ Quick setup:
 4. Set `DATABASE_URL` in your app service variables to the Railway Postgres connection string.
 
 Important:
-- Runtime reads and writes still use SQLite as the primary store in [db.py](db.py).
-- When `DATABASE_URL` (or `POSTGRES_MIRROR_URL`) is present, waiter requests and orders are mirrored into PostgreSQL on each write.
-- If rows are not appearing in Railway Postgres, verify schema initialization and check app logs for Postgres write warnings.
+- Runtime reads and writes use PostgreSQL as the primary store in [db.py](db.py).
+- Ensure your `DATABASE_URL` points to a persistent PostgreSQL instance (for example Railway Postgres).
+- If rows are not appearing in PostgreSQL, verify schema initialization and check app logs for connection/write warnings.
 
 ### Webhook Mode (Render Web Service)
 

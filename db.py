@@ -90,7 +90,7 @@ class _CompatConnection:
 
 
 class Database:
-    def __init__(self, database_url: str, timezone_name: str):
+    def __init__(self, database_url: str, timezone_name: str, allow_order_history_purge: bool = False):
         """
         Initialize database connection using PostgreSQL.
         
@@ -103,6 +103,7 @@ class Database:
             raise ValueError("DATABASE_URL environment variable is required for PostgreSQL")
         
         self.tz = ZoneInfo(timezone_name)
+        self._allow_order_history_purge = bool(allow_order_history_purge)
         self._human_exports_enabled = (os.getenv("HUMAN_READABLE_EXPORTS_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"})
         
         # Create human_readable export directory
@@ -1694,6 +1695,11 @@ class Database:
             return int(row["total"] or 0)
 
     def clear_order_history(self) -> int:
+        if not self._allow_order_history_purge:
+            raise PermissionError(
+                "Order history purge is disabled by policy. "
+                "Set ALLOW_ORDER_HISTORY_PURGE=true only when you intentionally need a one-time cleanup."
+            )
         with self.connection() as conn:
             row = conn.execute("SELECT COUNT(*) AS total FROM orders").fetchone()
             deleted_count = int(row["total"] or 0)

@@ -964,7 +964,11 @@ async def prime_chat_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-db = Database(database_url=settings.database_url, timezone_name=settings.bot_timezone)
+db = Database(
+    database_url=settings.database_url,
+    timezone_name=settings.bot_timezone,
+    allow_order_history_purge=settings.allow_order_history_purge,
+)
 try:
     audit_trail = ExcelAuditTrail(
         file_path=settings.excel_audit_file,
@@ -4271,6 +4275,18 @@ async def admin_panel_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         return
 
     if data == "admin:clear_orders_prompt":
+        if not settings.allow_order_history_purge:
+            await _edit_or_send_callback_message(
+                query,
+                text=(
+                    "🔒 <b>Order History Lock Enabled</b>\n\n"
+                    "Order records are protected and cannot be deleted.\n"
+                    "Set <b>ALLOW_ORDER_HISTORY_PURGE=true</b> in environment only for an intentional one-time cleanup."
+                ),
+                parse_mode="HTML",
+                reply_markup=admin_quick_actions_keyboard(),
+            )
+            return
         total_orders = db.count_orders()
         await _edit_or_send_callback_message(
             query,
@@ -4285,7 +4301,16 @@ async def admin_panel_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         return
 
     if data == "admin:clear_orders_confirm":
-        deleted_count = db.clear_order_history()
+        try:
+            deleted_count = db.clear_order_history()
+        except PermissionError as exc:
+            await _edit_or_send_callback_message(
+                query,
+                text=format_error_message(str(exc)),
+                parse_mode="HTML",
+                reply_markup=admin_quick_actions_keyboard(),
+            )
+            return
         await _edit_or_send_callback_message(
             query,
             text=(
@@ -4557,7 +4582,11 @@ async def clear_orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.effective_message.reply_text("Run /admin first and log in.")
         return
 
-    deleted_count = db.clear_order_history()
+    try:
+        deleted_count = db.clear_order_history()
+    except PermissionError as exc:
+        await update.effective_message.reply_text(str(exc))
+        return
     await update.effective_message.reply_text(
         f"✅ Order history cleared. Deleted {deleted_count} orders.",
         reply_markup=admin_quick_actions_keyboard(),
@@ -5203,6 +5232,17 @@ async def claim_order_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             ),
             parse_mode="HTML",
         )
+
+        waiter_gender = _waiter_gender(waiter.id)
+        available_orders = db.list_unclaimed_paid_orders(limit=20)
+        available_orders = _filter_available_orders_for_waiter(waiter_gender, available_orders)
+        if available_orders:
+            await context.bot.send_message(
+                chat_id=waiter.id,
+                text=format_waiter_order_book(available_orders),
+                parse_mode="HTML",
+                reply_markup=waiter_claim_list_keyboard(available_orders),
+            )
         return
 
     await query.edit_message_text(f"Order #{order_id} claimed successfully by you.")
@@ -5377,6 +5417,8 @@ async def waiter_online(update: Update, context: ContextTypes.DEFAULT_TYPE):
     _audit_waiter_upsert_by_user_id(user.id)
     text = format_waiter_online_success()
     await update.effective_message.reply_text(text, parse_mode="HTML")
+    # Immediately show the current claim queue so paid orders are visible without extra taps.
+    await view_orders(update, context)
 
 
 async def waiter_offline(update: Update, context: ContextTypes.DEFAULT_TYPE):
