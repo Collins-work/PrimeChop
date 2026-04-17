@@ -106,6 +106,7 @@ from ui import (
     format_view_cart,
     format_cart_view,
     format_wallet_info,
+    format_waiter_claimed_order,
     format_checkout_payment_choice,
     cart_actions_keyboard,
     cart_hall_selection_keyboard,
@@ -5169,6 +5170,12 @@ async def claim_order_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     order = db.get_order(order_id)
     if order:
         _audit_order_event(order, event="order_claimed", payment_status="confirmed")
+        item = db.get_menu_item(order["item_id"])
+        item_name = item["name"] if item else f"Item #{order_id}"
+        vendor = db.get_vendor(int(item["vendor_id"])) if item and item["vendor_id"] else None
+        vendor_name = vendor["name"] if vendor else (order["cafeteria_name"] or "Unknown vendor")
+        hall_name = order["hall_name"] or "Unknown hall"
+        room_number = order["room_number"] or "N/A"
         eta_minutes = int(order["eta_minutes"] or 0)
         eta_due_text = ""
         try:
@@ -5181,6 +5188,22 @@ async def claim_order_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             text=format_order_claimed(order_id, waiter.full_name, eta_minutes=eta_minutes, eta_due_at=eta_due_text),
             parse_mode="HTML",
         )
+
+        await query.edit_message_text(
+            format_waiter_claimed_order(
+                order_ref=order["order_ref"] or str(order_id),
+                item_name=item_name,
+                price=int(order["amount"] or 0),
+                vendor_name=vendor_name,
+                hall_name=hall_name,
+                room_number=room_number,
+                order_details=order["order_details"] or "",
+                eta_minutes=eta_minutes,
+                eta_due_at=eta_due_text,
+            ),
+            parse_mode="HTML",
+        )
+        return
 
     await query.edit_message_text(f"Order #{order_id} claimed successfully by you.")
 

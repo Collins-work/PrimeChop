@@ -664,6 +664,36 @@ def format_order_claimed(order_id: int, waiter_name: str, eta_minutes: int = 0, 
     )
 
 
+def format_waiter_claimed_order(
+    order_ref: str,
+    item_name: str,
+    price: int,
+    vendor_name: str,
+    hall_name: str,
+    room_number: str,
+    order_details: str = "",
+    eta_minutes: int = 0,
+    eta_due_at: str = "",
+) -> str:
+    """Format the waiter-facing card after an order is claimed."""
+    details_block = f"\n🧾 <b>Details:</b>\n{order_details}\n" if order_details else ""
+    eta_line = f"\n⏱️ <b>ETA:</b> about {eta_minutes} min" if eta_minutes > 0 else ""
+    eta_due_line = f"\n🕒 <b>Estimated arrival:</b> {eta_due_at}" if eta_due_at else ""
+    return (
+        f"{EMOJI_SUCCESS} <b>Order #{order_ref} Claimed</b>\n\n"
+        f"{EMOJI_DELIVERY} <b>Status:</b> Claimed by you\n"
+        f"{EMOJI_FOOD} <b>Item:</b> {item_name}\n"
+        f"{EMOJI_MONEY} <b>Amount:</b> ₦{price:,}\n"
+        f"{EMOJI_INFO} <b>Vendor:</b> {vendor_name}\n"
+        f"{details_block}"
+        f"🏫 <b>Hall:</b> {hall_name}\n"
+        f"🏢 <b>Room:</b> {room_number}"
+        f"{eta_line}"
+        f"{eta_due_line}\n\n"
+        "<i>This order is now locked to your account.</i>"
+    )
+
+
 def format_order_completed(order_id: int, cafeteria_name: str) -> str:
     """Format order completed message for customer."""
     return (
