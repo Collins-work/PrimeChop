@@ -135,6 +135,7 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 
 TELEGRAM_TEXT_SOFT_LIMIT = 3800
 ADMIN_CATALOG_PAGE_SIZE = 12
+ADMIN_WAITER_IMPERSONATION_PAGE_SIZE = 10
 ORDER_TIME_CALLBACK_PATTERN = r"^order:time:(?:\d{4}-\d{4}|\d{1,2}:\d{2}-\d{1,2}:\d{2})$"
 
 DELIVERY_TIME_SLOTS = [
@@ -1413,9 +1414,8 @@ async def _grant_super_admin(update: Update, context: ContextTypes.DEFAULT_TYPE)
     )
 
 
-def is_waiter(user_id: int) -> bool:
-    row = db.get_user(user_id)
-    return bool(row and row["role"] == "waiter" and row["waiter_verified"] == 1)
+def is_waiter(user_id: int, context: ContextTypes.DEFAULT_TYPE | None = None) -> bool:
+    return _effective_waiter_user_id(user_id, context) is not None
 
 
 def _normalized_hall_name(hall_name: str) -> str:
@@ -1587,6 +1587,28 @@ def has_super_admin_access(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> 
 
 def super_admin_access_enabled() -> bool:
     return bool(settings.super_admin_secret)
+
+
+def _admin_waiter_impersonation_user_id(context: ContextTypes.DEFAULT_TYPE) -> int | None:
+    try:
+        user_id = int(context.user_data.get("admin_waiter_impersonation") or 0)
+    except (TypeError, ValueError):
+        return None
+    return user_id if user_id > 0 else None
+
+
+def _effective_waiter_user_id(user_id: int, context: ContextTypes.DEFAULT_TYPE | None = None) -> int | None:
+    if context and has_super_admin_access(user_id, context):
+        impersonated_user_id = _admin_waiter_impersonation_user_id(context)
+        if impersonated_user_id:
+            row = db.get_user(impersonated_user_id)
+            if row and row["role"] == "waiter" and row["waiter_verified"] == 1:
+                return impersonated_user_id
+
+    row = db.get_user(user_id)
+    if row and row["role"] == "waiter" and row["waiter_verified"] == 1:
+        return user_id
+    return None
 
 
 def admin_panel_keyboard() -> InlineKeyboardMarkup:
@@ -1910,7 +1932,7 @@ def order_analytics_keyboard() -> InlineKeyboardMarkup:
 def format_waiter_management_menu() -> str:
     return (
         "👨‍🍳 <b>Waiter Management</b>\n\n"
-        "Manage approvals, performance, and waiter status from this menu."
+        "Manage approvals, performance, waiter status, and temporary waiter login from this menu."
     )
 
 
@@ -2763,12 +2785,40 @@ def admin_waiter_management_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
             [InlineKeyboardButton("✅ Approve Waiters", callback_data="adminwm:approve_waiters")],
+            [InlineKeyboardButton("🎭 Login as Waiter", callback_data="adminwm:impersonate_waiter:0")],
             [InlineKeyboardButton("❌ Deactivate Waiter", callback_data="adminwm:deactivate_waiter")],
             [InlineKeyboardButton("📊 Waiter Performance", callback_data="adminwm:performance")],
             [InlineKeyboardButton("👥 All Waiters", callback_data="adminwm:all_waiters")],
+            [InlineKeyboardButton("🚪 Exit Waiter Session", callback_data="adminwm:impersonate_clear")],
             [InlineKeyboardButton("🔙 Back to Admin Home", callback_data="admin:menu")],
         ]
     )
+
+
+def admin_waiter_impersonation_keyboard(waiters: list, page: int = 0) -> InlineKeyboardMarkup:
+    total = len(waiters)
+    total_pages = max(1, (total + ADMIN_WAITER_IMPERSONATION_PAGE_SIZE - 1) // ADMIN_WAITER_IMPERSONATION_PAGE_SIZE)
+    page = max(0, min(page, total_pages - 1))
+    start = page * ADMIN_WAITER_IMPERSONATION_PAGE_SIZE
+    end = start + ADMIN_WAITER_IMPERSONATION_PAGE_SIZE
+
+    rows = []
+    for row in waiters[start:end]:
+        code = row["waiter_code"] or f"UID{row['user_id']}"
+        label = f"{code} - {row['full_name']}"
+        rows.append([InlineKeyboardButton(label[:60], callback_data=f"adminwm:impersonate_select:{row['user_id']}")])
+
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton("◀️ Prev", callback_data=f"adminwm:impersonate_waiter:{page-1}"))
+    if page < total_pages - 1:
+        nav.append(InlineKeyboardButton("Next ▶️", callback_data=f"adminwm:impersonate_waiter:{page+1}"))
+    if nav:
+        rows.append(nav)
+
+    rows.append([InlineKeyboardButton("🚪 Exit Waiter Session", callback_data="adminwm:impersonate_clear")])
+    rows.append([InlineKeyboardButton("🔙 Back to Waiter Management", callback_data="adminwm:menu")])
+    return InlineKeyboardMarkup(rows)
 
 
 def _is_new_this_week(iso_text: str | None) -> bool:
@@ -2847,6 +2897,7 @@ def format_waiter_analytics_dashboard(rows: list) -> str:
     total_earnings = sum(int(row["earnings"] or 0) for row in rows)
 
     lines = ["📊 <b>Waiter Analysis</b>", ""]
+    lines.append("Pay Rate: ₦250 per completed order")
     lines.append(f"Total Waiters Tracked: {len(rows)}")
     lines.append(f"Completed Orders: {total_completed}")
     lines.append(f"Total Waiter Earnings: ₦{total_earnings:,}")
@@ -3703,6 +3754,76 @@ async def admin_waiter_management_callback(update: Update, context: ContextTypes
         )
         return
 
+    if action == "impersonate_waiter":
+        page = 0
+        if len(parts) == 3:
+            try:
+                page = max(0, int(parts[2]))
+            except ValueError:
+                page = 0
+        waiters = db.list_waiters(limit=100)
+        if not waiters:
+            await context.bot.send_message(chat_id=user.id, text="No waiters found.")
+            return
+
+        active_impersonation = _admin_waiter_impersonation_user_id(context)
+        lines = ["🎭 <b>Login as Waiter</b>"]
+        if active_impersonation:
+            current = db.get_user(active_impersonation)
+            if current:
+                lines.append(
+                    f"Current session: <b>{current['full_name']}</b> "
+                    f"[{current['waiter_code'] or f'UID{current['user_id']}'}]"
+                )
+        lines.append("")
+        lines.append("Choose the waiter account you want this admin session to act as.")
+        await _edit_or_send_callback_message(
+            query,
+            text="\n".join(lines),
+            parse_mode="HTML",
+            reply_markup=admin_waiter_impersonation_keyboard(waiters, page),
+        )
+        return
+
+    if action == "impersonate_select" and len(parts) == 3:
+        try:
+            waiter_user_id = int(parts[2])
+        except ValueError:
+            await query.answer("Invalid waiter selection.", show_alert=True)
+            return
+
+        waiter = db.get_user(waiter_user_id)
+        if not waiter or waiter["role"] != "waiter" or waiter["waiter_verified"] != 1:
+            await query.answer("That account is not an active waiter.", show_alert=True)
+            return
+
+        context.user_data["admin_waiter_impersonation"] = waiter_user_id
+        waiter_code = waiter["waiter_code"] or f"UID{waiter_user_id}"
+        await _edit_or_send_callback_message(
+            query,
+            text=(
+                "🎭 <b>Waiter Session Active</b>\n\n"
+                f"Now acting as: <b>{waiter['full_name']}</b> [{waiter_code}]\n\n"
+                "Use waiter actions now, or exit the waiter session from the menu."
+            ),
+            parse_mode="HTML",
+            reply_markup=admin_waiter_management_keyboard(),
+        )
+        return
+
+    if action == "impersonate_clear":
+        context.user_data.pop("admin_waiter_impersonation", None)
+        await _edit_or_send_callback_message(
+            query,
+            text=(
+                "🚪 <b>Waiter Session Closed</b>\n\n"
+                "Admin session is back to normal."
+            ),
+            parse_mode="HTML",
+            reply_markup=admin_waiter_management_keyboard(),
+        )
+        return
+
     if action == "approve_waiters":
         pending = db.list_pending_waiter_requests(limit=20)
         if not pending:
@@ -4492,11 +4613,12 @@ async def customer_support(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def view_orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    if not is_waiter(user.id):
+    waiter_user_id = _effective_waiter_user_id(user.id, context)
+    if waiter_user_id is None:
         await update.effective_message.reply_text(format_unauthorized(), parse_mode="HTML")
         return
 
-    waiter_gender = _waiter_gender(user.id)
+    waiter_gender = _waiter_gender(waiter_user_id)
 
     active_orders = db.list_waiter_active_orders(limit=40)
     active_orders = _filter_active_board_for_waiter(waiter_gender, active_orders)
@@ -4513,7 +4635,7 @@ async def view_orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=waiter_claim_list_keyboard(available_orders) if available_orders else None,
     )
 
-    claimed_orders = db.list_waiter_claimed_orders(user.id, limit=10)
+    claimed_orders = db.list_waiter_claimed_orders(waiter_user_id, limit=10)
     if claimed_orders:
         lines = ["🧾 <b>Your Claimed Orders</b>", "Mark delivery complete using /complete <order_id> or tap a Complete button."]
         for row in claimed_orders:
@@ -5188,11 +5310,15 @@ async def claim_order_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     await query.answer()
 
     waiter = query.from_user
-    if not is_waiter(waiter.id):
+    waiter_user_id = _effective_waiter_user_id(waiter.id, context)
+    if waiter_user_id is None:
         await query.answer("Only registered waiters can claim orders.", show_alert=True)
         return
 
-    db.upsert_user(waiter.id, waiter.full_name, role="waiter")
+    waiter_row = db.get_user(waiter_user_id)
+    waiter_name = waiter_row["full_name"] if waiter_row and waiter_row["full_name"] else waiter.full_name
+
+    db.upsert_user(waiter_user_id, waiter_name, role="waiter")
 
     order_id = int(query.data.split(":")[1])
     order = db.get_order(order_id)
@@ -5215,7 +5341,7 @@ async def claim_order_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             )
         return
 
-    claimed = db.claim_order(order_id, waiter.id, settings.default_delivery_eta_minutes)
+    claimed = db.claim_order(order_id, waiter_user_id, settings.default_delivery_eta_minutes)
 
     if not claimed:
         await query.answer("Order already claimed by another waiter.", show_alert=True)
@@ -5239,7 +5365,7 @@ async def claim_order_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             eta_due_text = ""
         await context.bot.send_message(
             chat_id=order["customer_id"],
-            text=format_order_claimed(order_id, waiter.full_name, eta_minutes=eta_minutes, eta_due_at=eta_due_text),
+            text=format_order_claimed(order_id, waiter_name, eta_minutes=eta_minutes, eta_due_at=eta_due_text),
             parse_mode="HTML",
         )
 
@@ -5279,12 +5405,13 @@ async def waiter_complete_callback(update: Update, context: ContextTypes.DEFAULT
     await query.answer()
 
     waiter = query.from_user
-    if not is_waiter(waiter.id):
+    waiter_user_id = _effective_waiter_user_id(waiter.id, context)
+    if waiter_user_id is None:
         await query.answer("Only registered waiters can complete orders.", show_alert=True)
         return
 
     order_id = int(query.data.split(":")[1])
-    ok = db.complete_order(order_id, waiter.id)
+    ok = db.complete_order(order_id, waiter_user_id)
     if not ok:
         await query.answer("Unable to complete this order.", show_alert=True)
         return
@@ -5314,12 +5441,13 @@ async def waiter_abandon_callback(update: Update, context: ContextTypes.DEFAULT_
     await query.answer()
 
     waiter = query.from_user
-    if not is_waiter(waiter.id):
+    waiter_user_id = _effective_waiter_user_id(waiter.id, context)
+    if waiter_user_id is None:
         await query.answer("Only registered waiters can abandon claimed orders.", show_alert=True)
         return
 
     order_id = int(query.data.split(":")[1])
-    ok = db.abandon_order(order_id, waiter.id)
+    ok = db.abandon_order(order_id, waiter_user_id)
     if not ok:
         await query.answer("Unable to abandon this order.", show_alert=True)
         return
@@ -5481,14 +5609,15 @@ async def home_button_router(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def waiter_online(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    if not is_waiter(user.id):
+    waiter_user_id = _effective_waiter_user_id(user.id, context)
+    if waiter_user_id is None:
         text = format_unauthorized()
         await update.effective_message.reply_text(text, parse_mode="HTML")
         return
 
-    db.upsert_user(user.id, user.full_name, role="waiter")
-    db.set_waiter_online(user.id, True)
-    _audit_waiter_upsert_by_user_id(user.id)
+    db.upsert_user(waiter_user_id, (db.get_user(waiter_user_id)["full_name"] if db.get_user(waiter_user_id) else user.full_name), role="waiter")
+    db.set_waiter_online(waiter_user_id, True)
+    _audit_waiter_upsert_by_user_id(waiter_user_id)
     text = format_waiter_online_success()
     await update.effective_message.reply_text(text, parse_mode="HTML")
     # Immediately show the current claim queue so paid orders are visible without extra taps.
@@ -5497,19 +5626,28 @@ async def waiter_online(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def waiter_offline(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    if not is_waiter(user.id):
+    waiter_user_id = _effective_waiter_user_id(user.id, context)
+    if waiter_user_id is None:
         text = format_unauthorized()
         await update.effective_message.reply_text(text, parse_mode="HTML")
         return
 
-    db.set_waiter_online(user.id, False)
-    _audit_waiter_upsert_by_user_id(user.id)
+    db.set_waiter_online(waiter_user_id, False)
+    _audit_waiter_upsert_by_user_id(waiter_user_id)
     text = format_waiter_offline_success()
     await update.effective_message.reply_text(text, parse_mode="HTML")
 
 
 async def waiter_logout_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
+    if has_super_admin_access(user.id, context) and context.user_data.get("admin_waiter_impersonation"):
+        context.user_data.pop("admin_waiter_impersonation", None)
+        await update.effective_message.reply_text(
+            "🚪 Waiter session closed. You are back in admin mode.",
+            reply_markup=admin_panel_keyboard(),
+        )
+        return
+
     row = db.get_user(user.id)
     if not row or int(row["waiter_verified"] or 0) != 1:
         await update.effective_message.reply_text("You do not have waiter access yet.")
@@ -5526,7 +5664,8 @@ async def waiter_logout_mode(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def complete(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    if not is_waiter(user.id):
+    waiter_user_id = _effective_waiter_user_id(user.id, context)
+    if waiter_user_id is None:
         text = format_unauthorized()
         await update.effective_message.reply_text(text, parse_mode="HTML")
         return
@@ -5541,7 +5680,7 @@ async def complete(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.effective_message.reply_text("Order ID must be a number.")
         return
 
-    ok = db.complete_order(order_id, user.id)
+    ok = db.complete_order(order_id, waiter_user_id)
     if not ok:
         await update.effective_message.reply_text("Unable to complete. Make sure you claimed that order first.")
         return

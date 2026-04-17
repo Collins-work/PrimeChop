@@ -893,7 +893,7 @@ class Database:
                     u.waiter_code,
                     SUM(CASE WHEN o.status='completed' THEN 1 ELSE 0 END) AS completed_orders,
                     SUM(CASE WHEN o.status='claimed' THEN 1 ELSE 0 END) AS active_orders,
-                    SUM(CASE WHEN o.status='completed' THEN o.waiter_share ELSE 0 END) AS earnings
+                    SUM(CASE WHEN o.status='completed' THEN 250 ELSE 0 END) AS earnings
                 FROM users u
                 LEFT JOIN orders o ON o.waiter_id = u.user_id
                 WHERE u.role='waiter' OR u.waiter_verified=1
