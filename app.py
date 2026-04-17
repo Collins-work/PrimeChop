@@ -142,7 +142,7 @@ DELIVERY_TIME_SLOTS = [
     ("18:30", "19:45"),
 ]
 
-DELIVERY_SLOT_VISIBILITY_START_HOUR = 12
+DELIVERY_SLOT_VISIBILITY_START_HOUR = 0
 
 FEMALE_ONLY_HALLS = {
     "hall mary",
@@ -1525,7 +1525,7 @@ def _delivery_slots_unavailable_message(now: datetime | None = None) -> str:
         current = now.astimezone(db.tz)
 
     if current.hour * 60 + current.minute < DELIVERY_SLOT_VISIBILITY_START_HOUR * 60:
-        return "Delivery time selection opens from 12:00pm. Please come back this afternoon."
+        return "Delivery time selection opens from 12:00am."
     return "No delivery time slots are available right now. Please try again tomorrow."
 
 
@@ -5596,10 +5596,14 @@ def main():
 
     async def post_init(application: Application):
         await application.bot.set_my_description(
-            "PrimeChop helps students browse campus vendors, order meals, top up wallet, pay securely, and track deliveries to their hall in real time."
+            "PRIMECHOP - Your Campus Food Delivery Bot\n\n"
+            "Order meals, snacks, and drinks from trusted campus vendors in minutes.\n"
+            "Secure wallet and Paystack payments.\n"
+            "Fast delivery updates to your hall and room.\n\n"
+            "Smart. Reliable. Built for students."
         )
         await application.bot.set_my_short_description(
-            "Order meals, pay, and track delivery on campus."
+            "Campus food ordering with secure payments and fast delivery tracking."
         )
         await _set_public_bot_commands(application)
 
