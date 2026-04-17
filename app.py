@@ -4673,7 +4673,22 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     message = update.effective_message
-    message_text = " ".join(context.args).strip() if context.args else ""
+    message_text = ""
+    if message:
+        source_text = message.text if message.text is not None else (message.caption or "")
+        if source_text:
+            # Keep broadcast formatting exactly as typed after the command.
+            command_match = re.match(r"^/\w+(?:@\w+)?", source_text)
+            if command_match:
+                message_text = source_text[command_match.end():]
+                if message_text and message_text[0].isspace():
+                    message_text = message_text[1:]
+            else:
+                message_text = source_text
+
+    if not message_text and context.args:
+        # Fallback for edge cases where text is unavailable from the message payload.
+        message_text = " ".join(context.args)
 
     photo_to_broadcast = None
     if message and message.photo:
@@ -4706,7 +4721,7 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 chat_id=int(chat_id),
                 photo=photo_to_broadcast,
                 caption=message_text or None,
-                parse_mode="HTML" if message_text else None,
+                parse_mode=None,
                 log_context="broadcast_photo",
             )
         else:
@@ -4714,6 +4729,7 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 context.bot,
                 chat_id=int(chat_id),
                 text=message_text,
+                parse_mode=None,
                 log_context="broadcast",
             )
         if sent:
