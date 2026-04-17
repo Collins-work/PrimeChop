@@ -2939,7 +2939,7 @@ def format_admin_order_tracker(rows: list) -> str:
     if not rows:
         return "📦 <b>Order Tracker</b>\n\nNo claimed or completed orders yet."
 
-    lines = ["📦 <b>Order Tracker</b>", "Accepted and completed orders with waiter ownership."]
+    lines = ["📦 <b>Order Tracker</b>", "Brief view of claimed and completed orders."]
     for row in rows:
         order_ref = row["order_ref"] or str(row["id"])
         item_name = row["item_name"] or f"Item #{row['id']}"
@@ -2947,27 +2947,43 @@ def format_admin_order_tracker(rows: list) -> str:
         room_number = row["room_number"] or "N/A"
         waiter_code = row["waiter_code"] or "N/A"
         waiter_name = row["waiter_name"] or "Unassigned"
+        customer_name = row["customer_name"] or "Unknown customer"
         rating = row["customer_rating"]
+        amount = int(row["amount"] or 0)
 
         if row["status"] == "claimed":
             status = "In progress"
+            status_emoji = "🚚"
             accepted_at = row["accepted_at"] or row["updated_at"] or "N/A"
             eta_minutes = int(row["eta_minutes"] or 0) if row["eta_minutes"] is not None else 0
             eta_due = row["eta_due_at"] or "N/A"
-            time_block = f"Accepted at: {accepted_at}\nETA: {eta_minutes} min (due {eta_due})"
+            if eta_minutes > 0:
+                time_block = (
+                    f"🕒 <b>Accepted:</b> {accepted_at}\n"
+                    f"⏱️ <b>ETA:</b> about {eta_minutes} min (due {eta_due})"
+                )
+            else:
+                time_block = f"🕒 <b>Accepted:</b> {accepted_at}"
         else:
             status = "Completed"
+            status_emoji = "✅"
             accepted_at = row["accepted_at"] or row["created_at"] or "N/A"
             completed_at = row["completed_at"] or row["updated_at"] or "N/A"
-            time_block = f"Accepted at: {accepted_at}\nCompleted at: {completed_at}"
+            time_block = (
+                f"🕒 <b>Accepted:</b> {accepted_at}\n"
+                f"✅ <b>Completed:</b> {completed_at}"
+            )
 
         rating_label = f"{int(rating)}/5" if rating is not None else "Not rated"
         lines.append(
-            f"#{order_ref} ({status}) - {item_name} - ₦{int(row['amount'] or 0):,}\n"
-            f"Waiter: {waiter_name} [{waiter_code}]\n"
-            f"Delivery: {hall_name} Room {room_number}\n"
+            f"{status_emoji} <b>Order #{order_ref} {status}</b>\n"
+            f"🍽 <b>Item:</b> {item_name}\n"
+            f"💰 <b>Amount:</b> ₦{amount:,}\n"
+            f"👤 <b>Claimed by:</b> {waiter_name} [{waiter_code}]\n"
+            f"🙍 <b>Customer:</b> {customer_name}\n"
+            f"📍 <b>Delivery:</b> {hall_name} Room {room_number}\n"
             f"{time_block}\n"
-            f"Customer Rating: {rating_label}"
+            f"⭐ <b>Rating:</b> {rating_label}"
         )
     return "\n\n".join(lines)
 
