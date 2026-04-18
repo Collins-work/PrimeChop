@@ -1067,25 +1067,28 @@ def _extract_paystack_reference(payload: dict, query: dict) -> str:
 
 
 def _is_paystack_success(payload: dict, query: dict) -> bool:
-    status = ""
+    success_values = {"success", "successful", "completed", "paid", "payment_successful", "charge.success"}
+    candidates: list[str] = []
+
+    def _collect_candidate(value) -> None:
+        # Paystack verify can return top-level boolean status (request ok),
+        # while the actual payment status lives under data.status.
+        if value is None or isinstance(value, bool):
+            return
+        text = str(value).strip().lower()
+        if text:
+            candidates.append(text)
+
     for source in (payload, query):
         for key in ("status", "payment_status", "event"):
-            value = source.get(key)
-            if value:
-                status = str(value).strip().lower()
-                break
-        if status:
-            break
+            _collect_candidate(source.get(key))
+
         data_node = source.get("data")
         if isinstance(data_node, dict):
             for key in ("status", "payment_status", "event"):
-                value = data_node.get(key)
-                if value:
-                    status = str(value).strip().lower()
-                    break
-            if status:
-                break
-    return status in {"success", "successful", "completed", "paid", "payment_successful", "charge.success"}
+                _collect_candidate(data_node.get(key))
+
+    return any(candidate in success_values for candidate in candidates)
 
 
 def _is_paystack_signature_valid(raw_body: bytes, signature: str) -> bool:
@@ -1165,12 +1168,18 @@ async def paystack_wallet_callback(request: web.Request) -> web.Response:
 
 def start_paystack_callback_server():
     if settings.webhook_enabled:
-        logger.warning(
-            "Skipping dedicated Paystack callback server because WEBHOOK_ENABLED=true. "
-            "Paystack callback URL will not be served by this process in webhook mode unless you expose "
-            "/paystack/callback separately."
-        )
-        return
+        callback_host = (settings.paystack_web_host or "").strip().lower()
+        webhook_host = (settings.webhook_listen_host or "").strip().lower()
+        same_port = settings.paystack_web_port == settings.webhook_port
+        wildcard_hosts = {"0.0.0.0", "::", ""}
+        same_host = callback_host == webhook_host or callback_host in wildcard_hosts or webhook_host in wildcard_hosts
+
+        if same_port and same_host:
+            logger.warning(
+                "Skipping dedicated Paystack callback server because WEBHOOK_ENABLED=true and callback/webhook bind to the same host/port. "
+                "Expose /paystack/callback separately or use a different PAYSTACK_WEB_PORT when possible."
+            )
+            return
     if not settings.paystack_callback_url:
         return
 
