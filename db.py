@@ -146,133 +146,133 @@ class Database:
             return
         try:
             with self.connection() as conn:
-            waiter_users = conn.execute(
-                """
-                SELECT
-                    user_id,
-                    full_name,
-                    role,
-                    waiter_online,
-                    waiter_code,
-                    waiter_verified,
-                    waiter_gender,
-                    created_at,
-                    updated_at
-                FROM users
-                WHERE role='waiter' OR waiter_verified=1
-                ORDER BY user_id ASC
-                """
-            ).fetchall()
-            latest_requests = conn.execute(
-                """
-                SELECT
-                    wr.user_id,
-                    wr.public_user_id,
-                    wr.full_name AS request_full_name,
-                    wr.details AS registration_details,
-                    wr.status AS request_status,
-                    wr.created_at AS request_created_at,
-                    wr.updated_at AS request_updated_at
-                FROM waiter_requests wr
-                WHERE wr.id = (
-                    SELECT wr2.id
-                    FROM waiter_requests wr2
-                    WHERE wr2.user_id = wr.user_id
-                    ORDER BY wr2.id DESC
-                    LIMIT 1
-                )
-                ORDER BY wr.user_id ASC
-                """
-            ).fetchall()
+                waiter_users = conn.execute(
+                    """
+                    SELECT
+                        user_id,
+                        full_name,
+                        role,
+                        waiter_online,
+                        waiter_code,
+                        waiter_verified,
+                        waiter_gender,
+                        created_at,
+                        updated_at
+                    FROM users
+                    WHERE role='waiter' OR waiter_verified=1
+                    ORDER BY user_id ASC
+                    """
+                ).fetchall()
+                latest_requests = conn.execute(
+                    """
+                    SELECT
+                        wr.user_id,
+                        wr.public_user_id,
+                        wr.full_name AS request_full_name,
+                        wr.details AS registration_details,
+                        wr.status AS request_status,
+                        wr.created_at AS request_created_at,
+                        wr.updated_at AS request_updated_at
+                    FROM waiter_requests wr
+                    WHERE wr.id = (
+                        SELECT wr2.id
+                        FROM waiter_requests wr2
+                        WHERE wr2.user_id = wr.user_id
+                        ORDER BY wr2.id DESC
+                        LIMIT 1
+                    )
+                    ORDER BY wr.user_id ASC
+                    """
+                ).fetchall()
 
-        users_by_id: dict[int, dict] = {}
-        for row in waiter_users:
-            user_id = int(row["user_id"] or 0)
-            users_by_id[user_id] = {
-                "user_id": user_id,
-                "full_name": row["full_name"] or "",
-                "role": row["role"] or "",
-                "waiter_online": int(row["waiter_online"] or 0),
-                "waiter_code": row["waiter_code"] or "",
-                "waiter_verified": int(row["waiter_verified"] or 0),
-                "waiter_gender": (row["waiter_gender"] or "").strip().lower(),
-                "public_user_id": "",
-                "request_status": "",
-                "registration_details": "",
-                "created_at": row["created_at"] or "",
-                "updated_at": row["updated_at"] or "",
-            }
-
-        for request in latest_requests:
-            user_id = int(request["user_id"] or 0)
-            existing = users_by_id.get(user_id)
-            if existing:
-                existing["public_user_id"] = request["public_user_id"] or ""
-                existing["request_status"] = request["request_status"] or ""
-                existing["registration_details"] = request["registration_details"] or ""
-                if not existing.get("waiter_gender"):
-                    existing["waiter_gender"] = self._extract_gender_from_details(request["registration_details"] or "")
-            else:
+            users_by_id: dict[int, dict] = {}
+            for row in waiter_users:
+                user_id = int(row["user_id"] or 0)
                 users_by_id[user_id] = {
                     "user_id": user_id,
-                    "full_name": request["request_full_name"] or "",
-                    "role": "pending_waiter",
-                    "waiter_online": 0,
-                    "waiter_code": "",
-                    "waiter_verified": 0,
-                    "waiter_gender": self._extract_gender_from_details(request["registration_details"] or ""),
-                    "public_user_id": request["public_user_id"] or "",
-                    "request_status": request["request_status"] or "",
-                    "registration_details": request["registration_details"] or "",
-                    "created_at": request["request_created_at"] or "",
-                    "updated_at": request["request_updated_at"] or "",
+                    "full_name": row["full_name"] or "",
+                    "role": row["role"] or "",
+                    "waiter_online": int(row["waiter_online"] or 0),
+                    "waiter_code": row["waiter_code"] or "",
+                    "waiter_verified": int(row["waiter_verified"] or 0),
+                    "waiter_gender": (row["waiter_gender"] or "").strip().lower(),
+                    "public_user_id": "",
+                    "request_status": "",
+                    "registration_details": "",
+                    "created_at": row["created_at"] or "",
+                    "updated_at": row["updated_at"] or "",
                 }
 
-        rows = sorted(
-            users_by_id.values(),
-            key=lambda row: (
-                row.get("waiter_code") or "",
-                row.get("public_user_id") or "",
-                int(row.get("user_id") or 0),
-            ),
-        )
+            for request in latest_requests:
+                user_id = int(request["user_id"] or 0)
+                existing = users_by_id.get(user_id)
+                if existing:
+                    existing["public_user_id"] = request["public_user_id"] or ""
+                    existing["request_status"] = request["request_status"] or ""
+                    existing["registration_details"] = request["registration_details"] or ""
+                    if not existing.get("waiter_gender"):
+                        existing["waiter_gender"] = self._extract_gender_from_details(request["registration_details"] or "")
+                else:
+                    users_by_id[user_id] = {
+                        "user_id": user_id,
+                        "full_name": request["request_full_name"] or "",
+                        "role": "pending_waiter",
+                        "waiter_online": 0,
+                        "waiter_code": "",
+                        "waiter_verified": 0,
+                        "waiter_gender": self._extract_gender_from_details(request["registration_details"] or ""),
+                        "public_user_id": request["public_user_id"] or "",
+                        "request_status": request["request_status"] or "",
+                        "registration_details": request["registration_details"] or "",
+                        "created_at": request["request_created_at"] or "",
+                        "updated_at": request["request_updated_at"] or "",
+                    }
 
-        self._human_data_dir.mkdir(parents=True, exist_ok=True)
-        with self._waiter_registry_export_path.open("w", newline="", encoding="utf-8") as handle:
-            writer = csv.writer(handle)
-            writer.writerow(
-                [
-                    "user_id",
-                    "full_name",
-                    "role",
-                    "waiter_online",
-                    "waiter_code",
-                    "waiter_verified",
-                    "waiter_gender",
-                    "public_waiter_id",
-                    "request_status",
-                    "registration_details",
-                    "created_at",
-                    "updated_at",
-                ]
+            rows = sorted(
+                users_by_id.values(),
+                key=lambda row: (
+                    row.get("waiter_code") or "",
+                    row.get("public_user_id") or "",
+                    int(row.get("user_id") or 0),
+                ),
             )
-            for row in rows:
+
+            self._human_data_dir.mkdir(parents=True, exist_ok=True)
+            with self._waiter_registry_export_path.open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.writer(handle)
                 writer.writerow(
                     [
-                        int(row.get("user_id") or 0),
-                        row.get("full_name") or "",
-                        row.get("role") or "",
-                        int(row.get("waiter_online") or 0),
-                        row.get("waiter_code") or "",
-                        int(row.get("waiter_verified") or 0),
-                        row.get("waiter_gender") or "",
-                        row.get("public_user_id") or "",
-                        row.get("request_status") or "",
-                        row.get("registration_details") or "",
-                        row.get("created_at") or "",
-                        row.get("updated_at") or "",
+                        "user_id",
+                        "full_name",
+                        "role",
+                        "waiter_online",
+                        "waiter_code",
+                        "waiter_verified",
+                        "waiter_gender",
+                        "public_waiter_id",
+                        "request_status",
+                        "registration_details",
+                        "created_at",
+                        "updated_at",
                     ]
                 )
+                for row in rows:
+                    writer.writerow(
+                        [
+                            int(row.get("user_id") or 0),
+                            row.get("full_name") or "",
+                            row.get("role") or "",
+                            int(row.get("waiter_online") or 0),
+                            row.get("waiter_code") or "",
+                            int(row.get("waiter_verified") or 0),
+                            row.get("waiter_gender") or "",
+                            row.get("public_user_id") or "",
+                            row.get("request_status") or "",
+                            row.get("registration_details") or "",
+                            row.get("created_at") or "",
+                            row.get("updated_at") or "",
+                        ]
+                    )
         except Exception as exc:
             logger.warning("CSV export failed (continuing without export): %s", exc)
 
@@ -414,101 +414,101 @@ class Database:
             return
         try:
             with self.connection() as conn:
-            rows = conn.execute(
-                """
-                SELECT
-                    o.id,
-                    o.order_ref,
-                    o.order_details,
-                    o.amount,
-                    o.service_fee_total,
-                    o.waiter_share,
-                    o.platform_share,
-                    o.status,
-                    o.hall_name,
-                    o.room_number,
-                    o.payment_method,
-                    o.payment_provider,
-                    o.payment_tx_ref,
-                    o.created_at,
-                    o.accepted_at,
-                    o.completed_at,
-                    o.eta_minutes,
-                    o.eta_due_at,
-                    c.user_id AS customer_id,
-                    c.full_name AS customer_name,
-                    w.user_id AS waiter_id,
-                    w.full_name AS waiter_name,
-                    w.waiter_code AS waiter_code,
-                    m.name AS item_name
-                FROM orders o
-                LEFT JOIN users c ON c.user_id = o.customer_id
-                LEFT JOIN users w ON w.user_id = o.waiter_id
-                LEFT JOIN menu_items m ON m.id = o.item_id
-                ORDER BY o.id DESC
-                """
-            ).fetchall()
+                rows = conn.execute(
+                    """
+                    SELECT
+                        o.id,
+                        o.order_ref,
+                        o.order_details,
+                        o.amount,
+                        o.service_fee_total,
+                        o.waiter_share,
+                        o.platform_share,
+                        o.status,
+                        o.hall_name,
+                        o.room_number,
+                        o.payment_method,
+                        o.payment_provider,
+                        o.payment_tx_ref,
+                        o.created_at,
+                        o.accepted_at,
+                        o.completed_at,
+                        o.eta_minutes,
+                        o.eta_due_at,
+                        c.user_id AS customer_id,
+                        c.full_name AS customer_name,
+                        w.user_id AS waiter_id,
+                        w.full_name AS waiter_name,
+                        w.waiter_code AS waiter_code,
+                        m.name AS item_name
+                    FROM orders o
+                    LEFT JOIN users c ON c.user_id = o.customer_id
+                    LEFT JOIN users w ON w.user_id = o.waiter_id
+                    LEFT JOIN menu_items m ON m.id = o.item_id
+                    ORDER BY o.id DESC
+                    """
+                ).fetchall()
 
-        self._human_data_dir.mkdir(parents=True, exist_ok=True)
-        with self._orders_users_export_path.open("w", newline="", encoding="utf-8") as handle:
-            writer = csv.writer(handle)
-            writer.writerow(
-                [
-                    "order_id",
-                    "order_ref",
-                    "item_name",
-                    "order_details",
-                    "amount",
-                    "service_fee_total",
-                    "waiter_share",
-                    "platform_share",
-                    "status",
-                    "customer_id",
-                    "customer_name",
-                    "waiter_id",
-                    "waiter_name",
-                    "waiter_code",
-                    "hall_name",
-                    "room_number",
-                    "payment_method",
-                    "payment_provider",
-                    "payment_tx_ref",
-                    "created_at",
-                    "accepted_at",
-                    "completed_at",
-                    "eta_minutes",
-                    "eta_due_at",
-                ]
-            )
-            for row in rows:
+            self._human_data_dir.mkdir(parents=True, exist_ok=True)
+            with self._orders_users_export_path.open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.writer(handle)
                 writer.writerow(
                     [
-                        int(row["id"] or 0),
-                        row["order_ref"] or "",
-                        row["item_name"] or "",
-                        row["order_details"] or "",
-                        int(row["amount"] or 0),
-                        int(row["service_fee_total"] or 0),
-                        int(row["waiter_share"] or 0),
-                        int(row["platform_share"] or 0),
-                        row["status"] or "",
-                        int(row["customer_id"] or 0),
-                        row["customer_name"] or "",
-                        int(row["waiter_id"] or 0) if row["waiter_id"] is not None else "",
-                        row["waiter_name"] or "",
-                        row["waiter_code"] or "",
-                        row["hall_name"] or "",
-                        row["room_number"] or "",
-                        row["payment_method"] or "",
-                        row["payment_provider"] or "",
-                        row["payment_tx_ref"] or "",
-                        row["created_at"] or "",
-                        row["accepted_at"] or "",
-                        row["completed_at"] or "",
-                        int(row["eta_minutes"] or 0) if row["eta_minutes"] is not None else "",
-                        row["eta_due_at"] or "",
+                        "order_id",
+                        "order_ref",
+                        "item_name",
+                        "order_details",
+                        "amount",
+                        "service_fee_total",
+                        "waiter_share",
+                        "platform_share",
+                        "status",
+                        "customer_id",
+                        "customer_name",
+                        "waiter_id",
+                        "waiter_name",
+                        "waiter_code",
+                        "hall_name",
+                        "room_number",
+                        "payment_method",
+                        "payment_provider",
+                        "payment_tx_ref",
+                        "created_at",
+                        "accepted_at",
+                        "completed_at",
+                        "eta_minutes",
+                        "eta_due_at",
                     ]
                 )
+                for row in rows:
+                    writer.writerow(
+                        [
+                            int(row["id"] or 0),
+                            row["order_ref"] or "",
+                            row["item_name"] or "",
+                            row["order_details"] or "",
+                            int(row["amount"] or 0),
+                            int(row["service_fee_total"] or 0),
+                            int(row["waiter_share"] or 0),
+                            int(row["platform_share"] or 0),
+                            row["status"] or "",
+                            int(row["customer_id"] or 0),
+                            row["customer_name"] or "",
+                            int(row["waiter_id"] or 0) if row["waiter_id"] is not None else "",
+                            row["waiter_name"] or "",
+                            row["waiter_code"] or "",
+                            row["hall_name"] or "",
+                            row["room_number"] or "",
+                            row["payment_method"] or "",
+                            row["payment_provider"] or "",
+                            row["payment_tx_ref"] or "",
+                            row["created_at"] or "",
+                            row["accepted_at"] or "",
+                            row["completed_at"] or "",
+                            int(row["eta_minutes"] or 0) if row["eta_minutes"] is not None else "",
+                            row["eta_due_at"] or "",
+                        ]
+                    )
         except Exception as exc:
             logger.warning("CSV export failed (continuing without export): %s", exc)
 
