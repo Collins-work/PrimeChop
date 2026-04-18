@@ -144,7 +144,8 @@ class Database:
     def _refresh_waiter_registry_export(self):
         if not self._human_exports_enabled:
             return
-        with self.connection() as conn:
+        try:
+            with self.connection() as conn:
             waiter_users = conn.execute(
                 """
                 SELECT
@@ -272,6 +273,8 @@ class Database:
                         row.get("updated_at") or "",
                     ]
                 )
+        except Exception as exc:
+            logger.warning("CSV export failed (continuing without export): %s", exc)
 
     def _mirror_waiter_request_by_user_id(self, user_id: int):
         """
@@ -409,7 +412,8 @@ class Database:
     def _refresh_orders_users_export(self):
         if not self._human_exports_enabled:
             return
-        with self.connection() as conn:
+        try:
+            with self.connection() as conn:
             rows = conn.execute(
                 """
                 SELECT
@@ -505,6 +509,8 @@ class Database:
                         row["eta_due_at"] or "",
                     ]
                 )
+        except Exception as exc:
+            logger.warning("CSV export failed (continuing without export): %s", exc)
 
     def _mirror_order_by_id(self, order_id: int):
         """Compatibility hook for legacy mirror flows.
@@ -1854,23 +1860,43 @@ class Database:
         now = self.now_iso()
         eta = max(5, int(eta_minutes or 20))
         eta_due = (datetime.now(self.tz) + timedelta(minutes=eta)).isoformat()
+        success = False
         with self.connection() as conn:
+            # Lock the order row to prevent concurrent claims (SELECT FOR UPDATE)
+            cursor = conn.execute(
+                """
+                SELECT id FROM orders
+                WHERE id=? AND waiter_id IS NULL AND status='pending_waiter'
+                FOR UPDATE
+                """,
+                (order_id,),
+            )
+            locked_order = cursor.fetchone()
+            if not locked_order:
+                return False
+            
+            # Check if waiter already has 3 claimed orders
+            cursor = conn.execute(
+                "SELECT COUNT(*) as count FROM orders WHERE waiter_id=? AND status='claimed'",
+                (waiter_id,),
+            )
+            count_row = cursor.fetchone()
+            waiter_claim_count = int(count_row["count"] or 0) if count_row else 0
+            if waiter_claim_count >= 3:
+                return False
+            
+            # Now perform the atomic update with locked row
             cursor = conn.execute(
                 """
                 UPDATE orders
                 SET waiter_id=?, status='claimed', accepted_at=COALESCE(accepted_at, ?), eta_minutes=?, eta_due_at=?, updated_at=?
-                                WHERE id=?
-                                    AND waiter_id IS NULL
-                                    AND status='pending_waiter'
-                                    AND (
-                                        SELECT COUNT(*)
-                                        FROM orders
-                                        WHERE waiter_id=? AND status='claimed'
-                                    ) < 3
+                WHERE id=?
                 """,
-                                (waiter_id, now, eta, eta_due, now, order_id, waiter_id),
+                (waiter_id, now, eta, eta_due, now, order_id),
             )
-        if cursor.rowcount == 1:
+            if cursor.rowcount == 1:
+                success = True
+        if success:
             self._refresh_orders_users_export()
             self._mirror_order_by_id(int(order_id))
             return True
@@ -1878,6 +1904,7 @@ class Database:
 
     def complete_order(self, order_id: int, waiter_id: int) -> bool:
         now = self.now_iso()
+        success = False
         with self.connection() as conn:
             cursor = conn.execute(
                 """
@@ -1887,7 +1914,9 @@ class Database:
                 """,
                 (now, now, order_id, waiter_id),
             )
-        if cursor.rowcount == 1:
+            if cursor.rowcount == 1:
+                success = True
+        if success:
             self._refresh_orders_users_export()
             self._mirror_order_by_id(int(order_id))
             return True
@@ -1895,6 +1924,7 @@ class Database:
 
     def abandon_order(self, order_id: int, waiter_id: int) -> bool:
         now = self.now_iso()
+        success = False
         with self.connection() as conn:
             cursor = conn.execute(
                 """
@@ -1909,7 +1939,9 @@ class Database:
                 """,
                 (now, order_id, waiter_id),
             )
-        if cursor.rowcount == 1:
+            if cursor.rowcount == 1:
+                success = True
+        if success:
             self._refresh_orders_users_export()
             self._mirror_order_by_id(int(order_id))
             return True
@@ -1989,20 +2021,35 @@ class Database:
     def mark_wallet_tx_success(self, tx_ref: str) -> Optional[sqlite3.Row]:
         now = self.now_iso()
         with self.connection() as conn:
-            tx = conn.execute(
-                "SELECT * FROM wallet_transactions WHERE tx_ref=? AND status='pending'",
+            # Lock the transaction row and atomically update if it's still pending
+            cursor = conn.execute(
+                """
+                SELECT * FROM wallet_transactions 
+                WHERE tx_ref=? AND status='pending'
+                FOR UPDATE
+                """,
                 (tx_ref,),
-            ).fetchone()
+            )
+            tx = cursor.fetchone()
             if not tx:
                 return None
-            conn.execute(
-                "UPDATE wallet_transactions SET status='success', updated_at=? WHERE id=?",
+            
+            # Atomically update transaction status
+            cursor = conn.execute(
+                "UPDATE wallet_transactions SET status='success', updated_at=? WHERE id=? AND status='pending'",
                 (now, tx["id"]),
             )
-            conn.execute(
-                "UPDATE users SET wallet_balance=wallet_balance+?, updated_at=? WHERE user_id=?",
-                (tx["amount"], now, tx["user_id"]),
-            )
+            
+            # Only credit wallet if we successfully updated the transaction (atomicity check)
+            if cursor.rowcount == 1:
+                conn.execute(
+                    "UPDATE users SET wallet_balance=wallet_balance+?, updated_at=? WHERE user_id=?",
+                    (tx["amount"], now, tx["user_id"]),
+                )
+            else:
+                # Transaction already marked as success by another request; don't credit again
+                return None
+        
         self._refresh_waiter_registry_export()
         return tx
 

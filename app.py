@@ -1052,17 +1052,33 @@ def _audit_waiter_remove(user_id: int):
 
 
 def _extract_paystack_reference(payload: dict, query: dict) -> str:
-    for source in (payload, query):
-        for key in ("reference", "tx_ref", "trx_ref", "transaction_reference", "transactionReference"):
-            value = source.get(key)
-            if value:
-                return str(value).strip()
-        data_node = source.get("data")
-        if isinstance(data_node, dict):
-            for key in ("reference", "tx_ref", "trx_ref", "transaction_reference", "transactionReference"):
-                value = data_node.get(key)
-                if value:
-                    return str(value).strip()
+    """Extract Paystack payment reference from callback payload/query.
+    
+    Prioritizes payload.data.reference (most reliable Paystack location),
+    then falls back to query parameter. Ignores top-level boolean status fields.
+    """
+    # First priority: data.reference in payload (most reliable from Paystack API)
+    if isinstance(payload.get("data"), dict):
+        ref = payload["data"].get("reference")
+        if ref and isinstance(ref, str):
+            return ref.strip()
+    
+    # Second priority: top-level reference in payload
+    ref = payload.get("reference")
+    if ref and isinstance(ref, str):
+        return ref.strip()
+    
+    # Third priority: query parameter (callback URL query string)
+    ref = query.get("reference")
+    if ref and isinstance(ref, str):
+        return ref.strip()
+    
+    # Fallback: check other alternative keys in payload
+    for key in ("tx_ref", "trx_ref", "transaction_reference", "transactionReference"):
+        ref = payload.get(key)
+        if ref and isinstance(ref, str):
+            return ref.strip()
+    
     return ""
 
 
@@ -2215,10 +2231,18 @@ def _build_cart_checkout_draft(context: ContextTypes.DEFAULT_TYPE) -> Optional[d
 
     primary_item_id = int(rows[0]["item"]["id"])
 
-    vendor_names = {
-        (db.get_vendor(int(row["item"]["vendor_id"]))["name"] if row["item"]["vendor_id"] and db.get_vendor(int(row["item"]["vendor_id"])) else settings.cafeteria_name)
-        for row in rows
-    }
+    vendor_names = set()
+    for row in rows:
+        vendor_id = row["item"].get("vendor_id")
+        if vendor_id:
+            vendor = db.get_vendor(int(vendor_id))
+            if vendor and vendor.get("name"):
+                vendor_names.add(vendor["name"])
+            else:
+                vendor_names.add(settings.cafeteria_name)
+        else:
+            vendor_names.add(settings.cafeteria_name)
+    
     vendor_name = next(iter(vendor_names)) if len(vendor_names) == 1 else "Multiple Vendors"
     details = "\n".join(lines)
     summary = f"Cart Order ({len(rows)} item{'s' if len(rows) != 1 else ''})"
