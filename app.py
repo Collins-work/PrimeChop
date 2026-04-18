@@ -2117,7 +2117,8 @@ def _cart_lines_and_total(context: ContextTypes.DEFAULT_TYPE) -> tuple[list[str]
         note = cart_notes.get(item_id, "")
         rows.append({"item": item, "qty": qty, "subtotal": subtotal, "unit_price": unit_price, "note": note})
         safe_item_name = html.escape(str(item["name"] or ""), quote=False)
-        lines.append(f"• {safe_item_name} x{qty} - ₦{subtotal:,} (₦{unit_price:,} each)")
+        safe_vendor_name = html.escape(_cart_vendor_name(item), quote=False)
+        lines.append(f"• {safe_item_name} ({safe_vendor_name}) x{qty} - ₦{subtotal:,} (₦{unit_price:,} each)")
         if note:
             lines.append(f"  📝 Note: {html.escape(note, quote=False)}")
     return lines, total, rows
@@ -3011,6 +3012,7 @@ def format_admin_order_tracker(rows: list) -> str:
     for row in rows:
         order_ref = row["order_ref"] or str(row["id"])
         item_name = row["item_name"] or f"Item #{row['id']}"
+        vendor_name = row["cafeteria_name"] or "Unknown vendor"
         hall_name = row["hall_name"] or "Unknown hall"
         room_number = row["room_number"] or "N/A"
         waiter_code = row["waiter_code"] or "N/A"
@@ -3018,6 +3020,10 @@ def format_admin_order_tracker(rows: list) -> str:
         customer_name = row["customer_name"] or "Unknown customer"
         rating = row["customer_rating"]
         amount = int(row["amount"] or 0)
+        order_details = (row["order_details"] or "").strip()
+        details_block = ""
+        if order_details:
+            details_block = f"\n🧾 <b>Details:</b>\n{html.escape(order_details, quote=False)}"
 
         if row["status"] == "claimed":
             status = "In progress"
@@ -3046,12 +3052,14 @@ def format_admin_order_tracker(rows: list) -> str:
         lines.append(
             f"{status_emoji} <b>Order #{order_ref} {status}</b>\n"
             f"🍽 <b>Item:</b> {item_name}\n"
+            f"🏪 <b>Vendor:</b> {vendor_name}\n"
             f"💰 <b>Amount:</b> ₦{amount:,}\n"
             f"👤 <b>Claimed by:</b> {waiter_name} [{waiter_code}]\n"
             f"🙍 <b>Customer:</b> {customer_name}\n"
             f"📍 <b>Delivery:</b> {hall_name} Room {room_number}\n"
             f"{time_block}\n"
             f"⭐ <b>Rating:</b> {rating_label}"
+            f"{details_block}"
         )
     return "\n\n".join(lines)
 

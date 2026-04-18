@@ -1865,6 +1865,8 @@ class Database:
                     o.order_ref,
                     o.status,
                     o.amount,
+                    o.cafeteria_name,
+                    o.order_details,
                     o.hall_name,
                     o.room_number,
                     o.customer_rating,
