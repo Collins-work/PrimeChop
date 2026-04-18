@@ -154,3 +154,14 @@ CREATE TABLE IF NOT EXISTS wallet_transactions (
 
 CREATE INDEX IF NOT EXISTS idx_wallet_transactions_user_id ON wallet_transactions(user_id);
 CREATE INDEX IF NOT EXISTS idx_wallet_transactions_tx_ref ON wallet_transactions(tx_ref);
+
+CREATE TABLE IF NOT EXISTS waiter_earning_adjustments (
+    id BIGSERIAL PRIMARY KEY,
+    waiter_user_id BIGINT NOT NULL REFERENCES users(user_id),
+    amount BIGINT NOT NULL,
+    reason TEXT,
+    adjusted_by BIGINT NOT NULL REFERENCES users(user_id),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_waiter_earning_adjustments_waiter_id ON waiter_earning_adjustments(waiter_user_id);

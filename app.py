@@ -2787,6 +2787,7 @@ def admin_waiter_management_keyboard() -> InlineKeyboardMarkup:
             [InlineKeyboardButton("✅ Approve Waiters", callback_data="adminwm:approve_waiters")],
             [InlineKeyboardButton("🎭 Login as Waiter", callback_data="adminwm:impersonate_waiter:0")],
             [InlineKeyboardButton("❌ Deactivate Waiter", callback_data="adminwm:deactivate_waiter")],
+            [InlineKeyboardButton("💵 Manual Earnings Correction", callback_data="adminwm:manual_earnings")],
             [InlineKeyboardButton("📊 Waiter Performance", callback_data="adminwm:performance")],
             [InlineKeyboardButton("👥 All Waiters", callback_data="adminwm:all_waiters")],
             [InlineKeyboardButton("🚪 Exit Waiter Session", callback_data="adminwm:impersonate_clear")],
@@ -2895,11 +2896,13 @@ def format_waiter_analytics_dashboard(rows: list) -> str:
 
     total_completed = sum(int(row["completed_orders"] or 0) for row in rows)
     total_earnings = sum(int(row["earnings"] or 0) for row in rows)
+    total_manual_adjustments = sum(int(row.get("manual_adjustments") or 0) for row in rows)
 
     lines = ["📊 <b>Waiter Analysis</b>", ""]
     lines.append("Pay Rate: ₦250 per completed order")
     lines.append(f"Total Waiters Tracked: {len(rows)}")
     lines.append(f"Completed Orders: {total_completed}")
+    lines.append(f"Manual Adjustments: ₦{total_manual_adjustments:,}")
     lines.append(f"Total Waiter Earnings: ₦{total_earnings:,}")
     lines.extend(["", "Top Waiters:"])
 
@@ -2908,8 +2911,13 @@ def format_waiter_analytics_dashboard(rows: list) -> str:
         completed = int(row["completed_orders"] or 0)
         active = int(row["active_orders"] or 0)
         earnings = int(row["earnings"] or 0)
+        manual_adjustment = int(row.get("manual_adjustments") or 0)
+        adjustment_note = ""
+        if manual_adjustment != 0:
+            sign = "+" if manual_adjustment > 0 else ""
+            adjustment_note = f" | Adjust: {sign}₦{manual_adjustment:,}"
         lines.append(
-            f"{index}. {code} | Completed: {completed} | Active: {active} | Earnings: ₦{earnings:,}"
+            f"{index}. {code} | Completed: {completed} | Active: {active} | Earnings: ₦{earnings:,}{adjustment_note}"
         )
 
     return "\n".join(lines)
@@ -3882,7 +3890,14 @@ async def admin_waiter_management_callback(update: Update, context: ContextTypes
                 completed = row["completed_orders"] or 0
                 active = row["active_orders"] or 0
                 earnings = row["earnings"] or 0
-                lines.append(f"• {code} | Completed: {completed} | Active: {active} | Earnings: ₦{earnings:,}")
+                manual_adjustment = int(row.get("manual_adjustments") or 0)
+                adjustment_note = ""
+                if manual_adjustment != 0:
+                    sign = "+" if manual_adjustment > 0 else ""
+                    adjustment_note = f" | Adjust: {sign}₦{manual_adjustment:,}"
+                lines.append(
+                    f"• {code} | Completed: {completed} | Active: {active} | Earnings: ₦{earnings:,}{adjustment_note}"
+                )
             await context.bot.send_message(chat_id=user.id, text="\n".join(lines), parse_mode="HTML")
         await context.bot.send_message(
             chat_id=user.id,
@@ -3897,6 +3912,24 @@ async def admin_waiter_management_callback(update: Update, context: ContextTypes
             chat_id=user.id,
             text="Send waiter code or user ID to delete from the database. Example: WAI123 or 123456789",
         )
+        return
+
+    if action == "manual_earnings":
+        context.user_data["admin_manual_earnings_mode"] = True
+        await context.bot.send_message(
+            chat_id=user.id,
+            text=(
+                "💵 <b>Manual Earnings Correction</b>\n\n"
+                "Send in this format:\n"
+                "<code>WAITER_CODE AMOUNT [reason]</code>\n\n"
+                "Examples:\n"
+                "<code>WAI938 250 Completed order backfill</code>\n"
+                "<code>WAI938 -250 Reversal</code>\n\n"
+                "Amount can be positive or negative."
+            ),
+            parse_mode="HTML",
+        )
+        return
 
 
 async def waiters_db(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3950,6 +3983,79 @@ async def admin_deactivate_router(update: Update, context: ContextTypes.DEFAULT_
     await update.effective_message.reply_text(
         f"❌ Waiter deleted from database: {row['full_name']} (ID: {row['user_id']})",
         reply_markup=admin_waiter_management_keyboard(),
+    )
+
+
+async def admin_manual_earnings_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.user_data.get("admin_manual_earnings_mode"):
+        return
+
+    user = update.effective_user
+    if not has_super_admin_access(user.id, context):
+        context.user_data.pop("admin_manual_earnings_mode", None)
+        return
+
+    text = (update.effective_message.text or "").strip()
+    parts = text.split()
+    if len(parts) < 2:
+        await update.effective_message.reply_text(
+            "Use: WAITER_CODE AMOUNT [reason]. Example: WAI938 250 Completed order backfill"
+        )
+        return
+
+    waiter_code = parts[0].upper()
+    try:
+        amount = int(parts[1].replace(",", ""))
+    except ValueError:
+        await update.effective_message.reply_text("Amount must be a valid integer. Example: 250 or -250")
+        return
+
+    if amount == 0:
+        await update.effective_message.reply_text("Amount cannot be 0.")
+        return
+
+    reason = " ".join(parts[2:]).strip() or "manual correction"
+    waiter = db.get_user_by_waiter_code(waiter_code)
+    if not waiter:
+        await update.effective_message.reply_text("Waiter not found for that code. Please confirm and try again.")
+        return
+
+    if waiter["role"] != "waiter" and int(waiter["waiter_verified"] or 0) != 1:
+        await update.effective_message.reply_text("That account is not an active waiter profile.")
+        return
+
+    db.add_waiter_earning_adjustment(
+        waiter_user_id=int(waiter["user_id"]),
+        amount=amount,
+        adjusted_by=int(user.id),
+        reason=reason,
+    )
+
+    rows = db.waiter_performance(limit=200)
+    updated = next((row for row in rows if int(row["user_id"]) == int(waiter["user_id"])), None)
+    earnings = int(updated["earnings"] or 0) if updated else 0
+    manual_adjustments = int(updated.get("manual_adjustments") or 0) if updated else amount
+
+    context.user_data.pop("admin_manual_earnings_mode", None)
+    sign = "+" if amount > 0 else ""
+    await update.effective_message.reply_text(
+        (
+            "✅ Manual earnings correction saved.\n\n"
+            f"Waiter: {waiter['full_name']} ({waiter_code})\n"
+            f"Adjustment: {sign}₦{amount:,}\n"
+            f"Manual total for waiter: ₦{manual_adjustments:,}\n"
+            f"Current waiter earnings: ₦{earnings:,}\n"
+            f"Reason: {reason}"
+        ),
+        reply_markup=admin_waiter_management_keyboard(),
+    )
+    logger.info(
+        "Manual waiter earning correction applied by admin %s for waiter %s (%s): amount=%s reason=%s",
+        user.id,
+        waiter["user_id"],
+        waiter_code,
+        amount,
+        reason,
     )
 
 
@@ -4088,6 +4194,9 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     if context.user_data.get("admin_deactivate_mode"):
         await admin_deactivate_router(update, context)
+        return
+    if context.user_data.get("admin_manual_earnings_mode"):
+        await admin_manual_earnings_router(update, context)
         return
     if context.user_data.get("waiter_register_mode") or context.user_data.get("waiter_login_mode"):
         await waiter_portal_router(update, context)
