@@ -129,6 +129,18 @@ class Database:
     def now_iso(self) -> str:
         return datetime.now(self.tz).isoformat()
 
+    def _extract_gender_from_details(self, details: str) -> str:
+        for line in (details or "").splitlines():
+            if ":" not in line:
+                continue
+            key, value = line.split(":", 1)
+            if key.strip().casefold() != "gender":
+                continue
+            normalized = value.strip().casefold()
+            if normalized in {"male", "female"}:
+                return normalized
+        return ""
+
     def _refresh_waiter_registry_export(self):
         if not self._human_exports_enabled:
             return
@@ -142,6 +154,7 @@ class Database:
                     waiter_online,
                     waiter_code,
                     waiter_verified,
+                    waiter_gender,
                     created_at,
                     updated_at
                 FROM users
@@ -181,6 +194,7 @@ class Database:
                 "waiter_online": int(row["waiter_online"] or 0),
                 "waiter_code": row["waiter_code"] or "",
                 "waiter_verified": int(row["waiter_verified"] or 0),
+                "waiter_gender": (row["waiter_gender"] or "").strip().lower(),
                 "public_user_id": "",
                 "request_status": "",
                 "registration_details": "",
@@ -195,6 +209,8 @@ class Database:
                 existing["public_user_id"] = request["public_user_id"] or ""
                 existing["request_status"] = request["request_status"] or ""
                 existing["registration_details"] = request["registration_details"] or ""
+                if not existing.get("waiter_gender"):
+                    existing["waiter_gender"] = self._extract_gender_from_details(request["registration_details"] or "")
             else:
                 users_by_id[user_id] = {
                     "user_id": user_id,
@@ -203,6 +219,7 @@ class Database:
                     "waiter_online": 0,
                     "waiter_code": "",
                     "waiter_verified": 0,
+                    "waiter_gender": self._extract_gender_from_details(request["registration_details"] or ""),
                     "public_user_id": request["public_user_id"] or "",
                     "request_status": request["request_status"] or "",
                     "registration_details": request["registration_details"] or "",
@@ -230,6 +247,7 @@ class Database:
                     "waiter_online",
                     "waiter_code",
                     "waiter_verified",
+                    "waiter_gender",
                     "public_waiter_id",
                     "request_status",
                     "registration_details",
@@ -246,6 +264,7 @@ class Database:
                         int(row.get("waiter_online") or 0),
                         row.get("waiter_code") or "",
                         int(row.get("waiter_verified") or 0),
+                        row.get("waiter_gender") or "",
                         row.get("public_user_id") or "",
                         row.get("request_status") or "",
                         row.get("registration_details") or "",
@@ -592,11 +611,13 @@ class Database:
                     waiter_online INTEGER DEFAULT 0,
                     waiter_code TEXT UNIQUE,
                     waiter_verified INTEGER DEFAULT 0,
+                    waiter_gender TEXT,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 )
                 """
             )
+            conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS waiter_gender TEXT")
             
             conn.execute(
                 """
@@ -837,21 +858,25 @@ class Database:
             )
         self._refresh_waiter_registry_export()
 
-    def assign_waiter_invite(self, user_id: int, full_name: str, waiter_code: str):
+    def assign_waiter_invite(self, user_id: int, full_name: str, waiter_code: str, waiter_gender: str | None = None):
         now = self.now_iso()
+        normalized_gender = (waiter_gender or "").strip().lower()
+        if normalized_gender not in {"male", "female"}:
+            normalized_gender = None
         with self.connection() as conn:
             conn.execute(
                 """
                 INSERT INTO users (
-                    user_id, full_name, role, waiter_online, waiter_code, waiter_verified, created_at, updated_at
-                ) VALUES (?, ?, 'customer', 0, ?, 1, ?, ?)
+                    user_id, full_name, role, waiter_online, waiter_code, waiter_verified, waiter_gender, created_at, updated_at
+                ) VALUES (?, ?, 'customer', 0, ?, 1, ?, ?, ?)
                 ON CONFLICT(user_id) DO UPDATE SET
                     full_name=excluded.full_name,
                     waiter_code=excluded.waiter_code,
                     waiter_verified=1,
+                    waiter_gender=COALESCE(excluded.waiter_gender, users.waiter_gender),
                     updated_at=excluded.updated_at
                 """,
-                (user_id, full_name, waiter_code, now, now),
+                (user_id, full_name, waiter_code, normalized_gender, now, now),
             )
             self._refresh_waiter_registry_export()
 
@@ -859,7 +884,7 @@ class Database:
         with self.connection() as conn:
             return conn.execute(
                 """
-                SELECT user_id, full_name, role, waiter_online, waiter_code, waiter_verified, updated_at
+                SELECT user_id, full_name, role, waiter_online, waiter_code, waiter_verified, waiter_gender, updated_at
                 FROM users
                 WHERE role='waiter' OR waiter_verified=1
                 ORDER BY updated_at DESC
@@ -1047,6 +1072,8 @@ class Database:
             if not request:
                 return None
 
+            waiter_gender = self._extract_gender_from_details(request["details"] or "") or None
+
             conn.execute(
                 """
                 UPDATE waiter_requests
@@ -1063,18 +1090,19 @@ class Database:
                     full_name=excluded.full_name,
                     waiter_code=?,
                     waiter_verified=1,
+                    waiter_gender=COALESCE(?, users.waiter_gender),
                     updated_at=excluded.updated_at
                 """,
-                (request["user_id"], request["full_name"], now, now, waiter_code),
+                (request["user_id"], request["full_name"], now, now, waiter_code, waiter_gender),
             )
 
             conn.execute(
                 """
                 UPDATE users
-                SET waiter_code=?, waiter_verified=1, updated_at=?
+                SET waiter_code=?, waiter_verified=1, waiter_gender=COALESCE(?, waiter_gender), updated_at=?
                 WHERE user_id=?
                 """,
-                (waiter_code, now, request["user_id"]),
+                (waiter_code, waiter_gender, now, request["user_id"]),
             )
 
             updated = conn.execute(
@@ -1135,6 +1163,22 @@ class Database:
                 "SELECT * FROM users WHERE waiter_code=?",
                 (waiter_code,),
             ).fetchone()
+
+    def set_waiter_gender(self, user_id: int, gender: str) -> bool:
+        normalized = (gender or "").strip().lower()
+        if normalized not in {"male", "female"}:
+            return False
+        now = self.now_iso()
+        with self.connection() as conn:
+            cursor = conn.execute(
+                "UPDATE users SET waiter_gender=?, updated_at=? WHERE user_id=?",
+                (normalized, now, user_id),
+            )
+            ok = cursor.rowcount == 1
+        if ok:
+            self._refresh_waiter_registry_export()
+            self._mirror_waiter_request_by_user_id(int(user_id))
+        return ok
 
     def waiter_code_exists(self, waiter_code: str) -> bool:
         with self.connection() as conn:

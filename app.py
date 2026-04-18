@@ -1456,6 +1456,10 @@ def _extract_waiter_gender_from_details(details: str) -> str:
 
 def _waiter_gender(user_id: int) -> str:
     row = db.get_user(user_id)
+    if row and "waiter_gender" in row:
+        normalized = str(row["waiter_gender"] or "").strip().casefold()
+        if normalized in {"male", "female"}:
+            return normalized
     if row and "gender" in row:
         normalized = str(row["gender"] or "").strip().casefold()
         if normalized in {"male", "female"}:
@@ -1468,12 +1472,14 @@ def _waiter_gender(user_id: int) -> str:
     details = latest_request["details"] or ""
     normalized = _extract_waiter_gender_from_details(details)
     if normalized:
+        db.set_waiter_gender(user_id, normalized)
         return normalized
 
     parsed, _ = _parse_waiter_registration_details(details)
     if parsed:
         value = parsed.get("gender", "").strip().casefold()
         if value in {"male", "female"}:
+            db.set_waiter_gender(user_id, value)
             return value
     return ""
 
@@ -2830,6 +2836,7 @@ def admin_waiter_management_keyboard() -> InlineKeyboardMarkup:
             [InlineKeyboardButton("✅ Approve Waiters", callback_data="adminwm:approve_waiters")],
             [InlineKeyboardButton("🎭 Login as Waiter", callback_data="adminwm:impersonate_waiter:0")],
             [InlineKeyboardButton("❌ Deactivate Waiter", callback_data="adminwm:deactivate_waiter")],
+            [InlineKeyboardButton("🚻 Set Waiter Gender", callback_data="adminwm:set_gender")],
             [InlineKeyboardButton("💵 Manual Earnings Correction", callback_data="adminwm:manual_earnings")],
             [InlineKeyboardButton("📊 Waiter Performance", callback_data="adminwm:performance")],
             [InlineKeyboardButton("👥 All Waiters", callback_data="adminwm:all_waiters")],
@@ -3920,7 +3927,8 @@ async def admin_waiter_management_callback(update: Update, context: ContextTypes
             for row in waiters:
                 code = row["waiter_code"] or "N/A"
                 status = "Active" if row["role"] == "waiter" and row["waiter_online"] else "Inactive"
-                lines.append(f"• {code} - {row['full_name']} ({status})")
+                gender = (row["waiter_gender"] or "unspecified").strip().lower()
+                lines.append(f"• {code} - {row['full_name']} ({status}, {gender})")
             await context.bot.send_message(chat_id=user.id, text="\n".join(lines), parse_mode="HTML")
         await context.bot.send_message(
             chat_id=user.id,
@@ -3981,6 +3989,22 @@ async def admin_waiter_management_callback(update: Update, context: ContextTypes
         )
         return
 
+    if action == "set_gender":
+        context.user_data["admin_waiter_gender_mode"] = True
+        await context.bot.send_message(
+            chat_id=user.id,
+            text=(
+                "🚻 <b>Set Waiter Gender</b>\n\n"
+                "Send in this format:\n"
+                "<code>WAITER_CODE GENDER</code>\n\n"
+                "Examples:\n"
+                "<code>WAI938 male</code>\n"
+                "<code>WAI940 female</code>"
+            ),
+            parse_mode="HTML",
+        )
+        return
+
 
 async def waiters_db(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -3998,7 +4022,8 @@ async def waiters_db(update: Update, context: ContextTypes.DEFAULT_TYPE):
         code = row["waiter_code"] or "N/A"
         status = "Active" if row["role"] == "waiter" and row["waiter_online"] else "Inactive"
         verified = "verified" if row["waiter_verified"] else "unverified"
-        lines.append(f"• {code} - {row['full_name']} (ID: {row['user_id']}) - {status}, {verified}")
+        gender = (row["waiter_gender"] or "unspecified").strip().lower()
+        lines.append(f"• {code} - {row['full_name']} (ID: {row['user_id']}) - {status}, {verified}, {gender}")
 
     lines.extend(
         [
@@ -4106,6 +4131,50 @@ async def admin_manual_earnings_router(update: Update, context: ContextTypes.DEF
         waiter_code,
         amount,
         reason,
+    )
+
+
+async def admin_waiter_gender_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.user_data.get("admin_waiter_gender_mode"):
+        return
+
+    user = update.effective_user
+    if not has_super_admin_access(user.id, context):
+        context.user_data.pop("admin_waiter_gender_mode", None)
+        return
+
+    text = (update.effective_message.text or "").strip()
+    parts = text.split()
+    if len(parts) != 2:
+        await update.effective_message.reply_text(
+            "Use: WAITER_CODE GENDER. Example: WAI938 male"
+        )
+        return
+
+    waiter_code = parts[0].upper().strip()
+    gender = parts[1].strip().lower()
+    if gender not in {"male", "female"}:
+        await update.effective_message.reply_text("Gender must be male or female.")
+        return
+
+    waiter = db.get_user_by_waiter_code(waiter_code)
+    if not waiter:
+        await update.effective_message.reply_text("Waiter not found for that code. Please confirm and try again.")
+        return
+
+    ok = db.set_waiter_gender(int(waiter["user_id"]), gender)
+    if not ok:
+        await update.effective_message.reply_text("Unable to update waiter gender right now. Try again.")
+        return
+
+    context.user_data.pop("admin_waiter_gender_mode", None)
+    await update.effective_message.reply_text(
+        (
+            "✅ Waiter gender updated.\n\n"
+            f"Waiter: {waiter['full_name']} ({waiter_code})\n"
+            f"Gender: {gender.title()}"
+        ),
+        reply_markup=admin_waiter_management_keyboard(),
     )
 
 
@@ -4247,6 +4316,9 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     if context.user_data.get("admin_manual_earnings_mode"):
         await admin_manual_earnings_router(update, context)
+        return
+    if context.user_data.get("admin_waiter_gender_mode"):
+        await admin_waiter_gender_router(update, context)
         return
     if context.user_data.get("waiter_register_mode") or context.user_data.get("waiter_login_mode"):
         await waiter_portal_router(update, context)
@@ -4779,6 +4851,11 @@ async def view_orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     waiter_gender = _waiter_gender(waiter_user_id)
+    if waiter_gender not in {"male", "female"}:
+        await update.effective_message.reply_text(
+            "⚠️ Your waiter gender is not set yet, so hall-based order routing cannot include your account. "
+            "Ask admin to set it from Waiter Management -> Set Waiter Gender using your waiter code.",
+        )
 
     active_orders = db.list_waiter_active_orders(limit=40)
     active_orders = _filter_active_board_for_waiter(waiter_gender, active_orders)
@@ -5486,7 +5563,7 @@ async def claim_order_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         await query.answer("Order not found.", show_alert=True)
         return
 
-    waiter_gender = _waiter_gender(waiter.id)
+    waiter_gender = _waiter_gender(waiter_user_id)
     required_gender = _required_waiter_gender_for_hall(order["hall_name"] or "")
     if required_gender and waiter_gender != required_gender:
         if waiter_gender in {"male", "female"}:
@@ -5546,7 +5623,7 @@ async def claim_order_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             reply_markup=waiter_claimed_order_actions_keyboard(order_id),
         )
 
-        waiter_gender = _waiter_gender(waiter.id)
+        waiter_gender = _waiter_gender(waiter_user_id)
         available_orders = db.list_unclaimed_paid_orders(limit=20)
         available_orders = _filter_available_orders_for_waiter(waiter_gender, available_orders)
         if available_orders:
@@ -5634,7 +5711,7 @@ async def waiter_abandon_callback(update: Update, context: ContextTypes.DEFAULT_
         parse_mode="HTML",
     )
 
-    waiter_gender = _waiter_gender(waiter.id)
+    waiter_gender = _waiter_gender(waiter_user_id)
     available_orders = db.list_unclaimed_paid_orders(limit=20)
     available_orders = _filter_available_orders_for_waiter(waiter_gender, available_orders)
     if available_orders:
