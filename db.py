@@ -700,6 +700,21 @@ class Database:
                 )
                 """
             )
+
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS waiter_earning_adjustments (
+                    id SERIAL PRIMARY KEY,
+                    waiter_user_id BIGINT NOT NULL,
+                    amount INTEGER NOT NULL,
+                    reason TEXT,
+                    adjusted_by BIGINT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY (waiter_user_id) REFERENCES users(user_id),
+                    FOREIGN KEY (adjusted_by) REFERENCES users(user_id)
+                )
+                """
+            )
             
             # Create indexes
             conn.execute("CREATE INDEX IF NOT EXISTS idx_orders_customer_id ON orders(customer_id)")
@@ -710,6 +725,7 @@ class Database:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_wallet_transactions_tx_ref ON wallet_transactions(tx_ref)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_waiter_requests_user_id ON waiter_requests(user_id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_waiter_requests_status ON waiter_requests(status)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_waiter_earning_adjustments_waiter_id ON waiter_earning_adjustments(waiter_user_id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_users_waiter_code ON users(waiter_code)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_menu_items_vendor_id ON menu_items(vendor_id)")
             
@@ -893,16 +909,44 @@ class Database:
                     u.waiter_code,
                     SUM(CASE WHEN o.status='completed' THEN 1 ELSE 0 END) AS completed_orders,
                     SUM(CASE WHEN o.status='claimed' THEN 1 ELSE 0 END) AS active_orders,
-                    SUM(CASE WHEN o.status='completed' THEN 250 ELSE 0 END) AS earnings
+                    COALESCE(a.adjustment_total, 0) AS manual_adjustments,
+                    SUM(CASE WHEN o.status='completed' THEN 250 ELSE 0 END) + COALESCE(a.adjustment_total, 0) AS earnings
                 FROM users u
                 LEFT JOIN orders o ON o.waiter_id = u.user_id
+                LEFT JOIN (
+                    SELECT waiter_user_id, SUM(amount) AS adjustment_total
+                    FROM waiter_earning_adjustments
+                    GROUP BY waiter_user_id
+                ) a ON a.waiter_user_id = u.user_id
                 WHERE u.role='waiter' OR u.waiter_verified=1
-                GROUP BY u.user_id, u.full_name, u.waiter_code
+                GROUP BY u.user_id, u.full_name, u.waiter_code, a.adjustment_total
                 ORDER BY completed_orders DESC, earnings DESC
                 LIMIT ?
                 """,
                 (limit,),
             ).fetchall()
+
+    def add_waiter_earning_adjustment(
+        self,
+        waiter_user_id: int,
+        amount: int,
+        adjusted_by: int,
+        reason: str = "manual correction",
+    ) -> int:
+        now = self.now_iso()
+        with self.connection() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO waiter_earning_adjustments (
+                    waiter_user_id, amount, reason, adjusted_by, created_at
+                )
+                VALUES (?, ?, ?, ?, ?)
+                RETURNING id
+                """,
+                (waiter_user_id, amount, reason, adjusted_by, now),
+            )
+            row = cursor.fetchone()
+            return int(row["id"]) if row else 0
 
     def waiter_public_user_id_exists(self, public_user_id: str) -> bool:
         with self.connection() as conn:
@@ -1568,7 +1612,7 @@ class Database:
                     o.created_at
                 FROM orders o
                 LEFT JOIN menu_items m ON m.id = o.item_id
-                WHERE o.status='claimed' AND o.waiter_id=?
+                WHERE o.status='claimed' AND o.waiter_id=? AND o.completed_at IS NULL
                 ORDER BY o.id DESC
                 LIMIT ?
                 """,
@@ -1594,7 +1638,8 @@ class Database:
                 FROM orders o
                 LEFT JOIN menu_items m ON m.id = o.item_id
                 LEFT JOIN users u ON u.user_id = o.waiter_id
-                WHERE o.status IN ('pending_waiter', 'claimed')
+                                WHERE o.status IN ('pending_waiter', 'claimed')
+                                    AND o.completed_at IS NULL
                 ORDER BY o.id DESC
                 LIMIT ?
                 """,
