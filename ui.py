@@ -671,12 +671,14 @@ def format_waiter_claimed_order(
     vendor_name: str,
     hall_name: str,
     room_number: str,
+    delivery_time: str = "",
     order_details: str = "",
     eta_minutes: int = 0,
     eta_due_at: str = "",
 ) -> str:
     """Format the waiter-facing card after an order is claimed."""
     details_block = f"\n🧾 <b>Details:</b>\n{order_details}\n" if order_details else ""
+    delivery_time_line = f"🕐 <b>Delivery Time:</b> {delivery_time}\n" if delivery_time else ""
     eta_line = f"\n⏱️ <b>ETA:</b> about {eta_minutes} min" if eta_minutes > 0 else ""
     eta_due_line = f"\n🕒 <b>Estimated arrival:</b> {eta_due_at}" if eta_due_at else ""
     return (
@@ -686,6 +688,7 @@ def format_waiter_claimed_order(
         f"{EMOJI_MONEY} <b>Amount:</b> ₦{price:,}\n"
         f"{EMOJI_INFO} <b>Vendor:</b> {vendor_name}\n"
         f"{details_block}"
+        f"{delivery_time_line}"
         f"🏫 <b>Hall:</b> {hall_name}\n"
         f"🏢 <b>Room:</b> {room_number}"
         f"{eta_line}"

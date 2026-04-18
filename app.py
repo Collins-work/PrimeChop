@@ -5495,6 +5495,7 @@ async def claim_order_callback(update: Update, context: ContextTypes.DEFAULT_TYP
                 vendor_name=vendor_name,
                 hall_name=hall_name,
                 room_number=room_number,
+                delivery_time=order["delivery_time"] or "",
                 order_details=order["order_details"] or "",
                 eta_minutes=eta_minutes,
                 eta_due_at=eta_due_text,
