@@ -2652,20 +2652,53 @@ async def confirm_order_payment(update: Update, context: ContextTypes.DEFAULT_TY
         return
 
     if not context.args:
-        await update.effective_message.reply_text("Usage: /confirm_order <payment_tx_ref>")
+        await update.effective_message.reply_text("Usage: /confirm_order <payment_tx_ref_or_order_ref>")
         return
 
-    tx_ref = context.args[0].strip()
-    order = db.mark_order_payment_success(tx_ref)
+    reference = context.args[0].strip()
+
+    # Primary path: confirm using payment provider reference.
+    order = db.mark_order_payment_success(reference)
     if not order:
-        await update.effective_message.reply_text("Pending order payment not found for that reference.")
+        # Fallback path: admins sometimes pass PrimeChop order_ref (e.g. 2v0bzcv).
+        order = db.mark_order_payment_success_by_order_ref(reference)
+
+    if order:
+        _audit_order_event(order, event="payment_confirmed", payment_status="confirmed")
+        await update.effective_message.reply_text(
+            f"✅ Order payment confirmed for {order['order_ref'] or order['id']}.",
+        )
+        await _dispatch_paid_order(order, context)
         return
-    _audit_order_event(order, event="payment_confirmed", payment_status="confirmed")
+
+    # If no state transition happened, resolve existing order and explain why.
+    existing = db.get_order_by_ref(reference)
+    if not existing:
+        existing = db.get_order_by_payment_ref(reference)
+
+    if not existing:
+        await update.effective_message.reply_text("No order found for that reference.")
+        return
+
+    status = (existing["status"] or "").strip().lower()
+    ref_display = existing["order_ref"] or str(existing["id"])
+
+    if status == "pending_waiter":
+        await _dispatch_paid_order(existing, context)
+        await update.effective_message.reply_text(
+            f"ℹ️ Order {ref_display} is already payment-confirmed (pending_waiter). Re-dispatched to available waiters.",
+        )
+        return
+
+    if status in {"claimed", "completed", "delivered"}:
+        await update.effective_message.reply_text(
+            f"ℹ️ Order {ref_display} is already in '{status}' state. No payment confirmation needed.",
+        )
+        return
 
     await update.effective_message.reply_text(
-        f"✅ Order payment confirmed for {order['order_ref'] or order['id']}.",
+        f"Pending payment confirmation not possible for order {ref_display} in state '{status or 'unknown'}'.",
     )
-    await _dispatch_paid_order(order, context)
 
 
 async def mock_payment_confirm_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):

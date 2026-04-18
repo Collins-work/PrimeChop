@@ -1447,6 +1447,14 @@ class Database:
         with self.connection() as conn:
             return conn.execute("SELECT * FROM orders WHERE id=?", (order_id,)).fetchone()
 
+    def get_order_by_ref(self, order_ref: str) -> Optional[sqlite3.Row]:
+        with self.connection() as conn:
+            return conn.execute("SELECT * FROM orders WHERE order_ref=?", (order_ref,)).fetchone()
+
+    def get_order_by_payment_ref(self, tx_ref: str) -> Optional[sqlite3.Row]:
+        with self.connection() as conn:
+            return conn.execute("SELECT * FROM orders WHERE payment_tx_ref=?", (tx_ref,)).fetchone()
+
     def order_ref_exists(self, order_ref: str) -> bool:
         with self.connection() as conn:
             row = conn.execute(
@@ -1758,6 +1766,29 @@ class Database:
             order = conn.execute(
                 "SELECT * FROM orders WHERE payment_tx_ref=? AND status='pending_payment'",
                 (tx_ref,),
+            ).fetchone()
+            if not order:
+                return None
+
+            conn.execute(
+                """
+                UPDATE orders
+                SET status='pending_waiter', updated_at=?
+                WHERE id=?
+                """,
+                (now, order["id"]),
+            )
+            updated = conn.execute("SELECT * FROM orders WHERE id=?", (order["id"],)).fetchone()
+        self._refresh_orders_users_export()
+        self._mirror_order_by_id(int(order["id"]))
+        return updated
+
+    def mark_order_payment_success_by_order_ref(self, order_ref: str) -> Optional[sqlite3.Row]:
+        now = self.now_iso()
+        with self.connection() as conn:
+            order = conn.execute(
+                "SELECT * FROM orders WHERE order_ref=? AND status='pending_payment'",
+                (order_ref,),
             ).fetchone()
             if not order:
                 return None
