@@ -1585,6 +1585,48 @@ def _format_delivery_time_label(start_hhmm: str, end_hhmm: str) -> str:
     return f"{start_label} - {end_label}"
 
 
+def _format_hhmm_12h(value: str) -> str:
+    text = (value or "").strip()
+    if not text:
+        return ""
+    try:
+        return datetime.strptime(text, "%H:%M").strftime("%I:%M%p").lstrip("0").lower()
+    except ValueError:
+        return text
+
+
+def _format_delivery_time_text_12h(value: str) -> str:
+    text = (value or "").strip()
+    if not text:
+        return ""
+
+    m = re.fullmatch(r"(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})", text)
+    if m:
+        start, end = m.groups()
+        return f"{_format_hhmm_12h(start)} - {_format_hhmm_12h(end)}"
+
+    return _format_hhmm_12h(text)
+
+
+def _format_tracker_datetime_12h(value: str) -> str:
+    text = (value or "").strip()
+    if not text:
+        return "N/A"
+
+    try:
+        dt = datetime.fromisoformat(text)
+        return dt.strftime("%Y-%m-%d %I:%M%p").lstrip("0").lower()
+    except ValueError:
+        pass
+
+    m = re.match(r"^(\d{1,2}:\d{2})", text)
+    if m:
+        hhmm = m.group(1)
+        return text.replace(hhmm, _format_hhmm_12h(hhmm), 1)
+
+    return text
+
+
 def generate_order_ref() -> str:
     alphabet = string.ascii_lowercase + string.digits
     for _ in range(20):
@@ -3119,9 +3161,9 @@ def format_admin_order_tracker(rows: list) -> str:
         if row["status"] == "claimed":
             status = "In progress"
             status_emoji = "🚚"
-            accepted_at = row["accepted_at"] or row["updated_at"] or "N/A"
+            accepted_at = _format_tracker_datetime_12h(row["accepted_at"] or row["updated_at"] or "")
             eta_minutes = int(row["eta_minutes"] or 0) if row["eta_minutes"] is not None else 0
-            eta_due = row["eta_due_at"] or "N/A"
+            eta_due = _format_tracker_datetime_12h(row["eta_due_at"] or "")
             if eta_minutes > 0:
                 time_block = (
                     f"🕒 <b>Accepted:</b> {accepted_at}\n"
@@ -3132,8 +3174,8 @@ def format_admin_order_tracker(rows: list) -> str:
         else:
             status = "Completed"
             status_emoji = "✅"
-            accepted_at = row["accepted_at"] or row["created_at"] or "N/A"
-            completed_at = row["completed_at"] or row["updated_at"] or "N/A"
+            accepted_at = _format_tracker_datetime_12h(row["accepted_at"] or row["created_at"] or "")
+            completed_at = _format_tracker_datetime_12h(row["completed_at"] or row["updated_at"] or "")
             time_block = (
                 f"🕒 <b>Accepted:</b> {accepted_at}\n"
                 f"✅ <b>Completed:</b> {completed_at}"
@@ -5968,7 +6010,7 @@ async def claim_order_callback(update: Update, context: ContextTypes.DEFAULT_TYP
                 vendor_name=vendor_name,
                 hall_name=hall_name,
                 room_number=room_number,
-                delivery_time=order["delivery_time"] or "",
+                delivery_time=_format_delivery_time_text_12h(order["delivery_time"] or ""),
                 order_details=order["order_details"] or "",
                 eta_minutes=eta_minutes,
                 eta_due_at=eta_due_text,
