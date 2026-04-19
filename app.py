@@ -1676,9 +1676,7 @@ def admin_catalog_keyboard() -> InlineKeyboardMarkup:
             [InlineKeyboardButton("➕ Add Menu Item", callback_data="admin:catalog_additem_start")],
             [InlineKeyboardButton("🍽️ Manage Items", callback_data="admin:catalog_view_items")],
             [InlineKeyboardButton("🏪 List Vendors", callback_data="admin:catalog_list_vendors")],
-            [InlineKeyboardButton("� Search Items", callback_data="admin:catalog_search_items")],
-            [InlineKeyboardButton("🔍 Search Vendors", callback_data="admin:catalog_search_vendors")],
-            [InlineKeyboardButton("�📦 Catalog Summary", callback_data="admin:catalog_summary")],
+            [InlineKeyboardButton("📦 Catalog Summary", callback_data="admin:catalog_summary")],
             [InlineKeyboardButton("🔙 Back to Admin Home", callback_data="admin:menu")],
         ]
     )
@@ -1734,6 +1732,11 @@ def admin_catalog_items_keyboard_paged(items: list, page: int) -> InlineKeyboard
         nav.append(InlineKeyboardButton("Next ▶️", callback_data=f"admin:catalog_view_items:{page+1}"))
     if nav:
         rows.append(nav)
+
+    rows.append([
+        InlineKeyboardButton("🔍 Search Items", callback_data="admin:catalog_search_items"),
+        InlineKeyboardButton("🏪 Search Vendors", callback_data="admin:catalog_search_vendors"),
+    ])
 
     rows.append([InlineKeyboardButton("🔙 Back to Catalog", callback_data="admin:menu_catalog")])
     return InlineKeyboardMarkup(rows)
