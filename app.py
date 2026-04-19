@@ -3123,7 +3123,7 @@ def format_admin_order_tracker(rows: list) -> str:
 
         rating_label = f"{int(rating)}/5" if rating is not None else "Not rated"
         lines.append(
-            f"{status_emoji} <b>Order #{order_ref} {status}</b>\n"
+            f"{status_emoji} <b>Order #{order_ref} [ID: {row['id']}] {status}</b>\n"
             f"🍽 <b>Item:</b> {item_name}\n"
             f"🏪 <b>Vendor:</b> {vendor_name}\n"
             f"💰 <b>Amount:</b> ₦{amount:,}\n"
