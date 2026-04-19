@@ -1,4 +1,4 @@
-import asyncio
+﻿import asyncio
 import ast
 import html
 import hashlib
@@ -64,6 +64,7 @@ from ui import (
     format_start_banner_caption,
         format_catalog_items_list,
         format_catalog_management_menu,
+        format_catalog_search_prompt,
         format_item_management_options,
         format_item_removed_success,
         format_item_removal_confirmation,
@@ -1676,7 +1677,9 @@ def admin_catalog_keyboard() -> InlineKeyboardMarkup:
             [InlineKeyboardButton("➕ Add Menu Item", callback_data="admin:catalog_additem_start")],
             [InlineKeyboardButton("🍽️ Manage Items", callback_data="admin:catalog_view_items")],
             [InlineKeyboardButton("🏪 List Vendors", callback_data="admin:catalog_list_vendors")],
-            [InlineKeyboardButton("📦 Catalog Summary", callback_data="admin:catalog_summary")],
+            [InlineKeyboardButton("� Search Items", callback_data="admin:catalog_search_items")],
+            [InlineKeyboardButton("🔍 Search Vendors", callback_data="admin:catalog_search_vendors")],
+            [InlineKeyboardButton("�📦 Catalog Summary", callback_data="admin:catalog_summary")],
             [InlineKeyboardButton("🔙 Back to Admin Home", callback_data="admin:menu")],
         ]
     )
@@ -4241,6 +4244,68 @@ async def admin_waiter_gender_router(update: Update, context: ContextTypes.DEFAU
     )
 
 
+
+
+async def admin_catalog_search_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle search input for items or vendors in catalog."""
+    user = update.effective_user
+    if not has_super_admin_access(user.id, context):
+        context.user_data.pop("admin_catalog_search_mode", None)
+        await update.effective_message.reply_text("Run /admin and login first.")
+        return
+
+    search_query = (update.effective_message.text or "").strip().lower()
+    if not search_query:
+        await update.effective_message.reply_text("Please send a search term.")
+        return
+
+    search_mode = context.user_data.get("admin_catalog_search_mode")
+    if search_mode == "items":
+        all_items = db.list_menu_items_with_vendor()
+        filtered = [item for item in all_items if search_query in item["name"].lower() or search_query in (item.get("vendor_name") or "").lower()]
+        
+        if not filtered:
+            await update.effective_message.reply_text(
+                f"🔍 <b>Search Results for Items</b>\n\n"
+                f"No items found matching '{search_query}'.",
+                parse_mode="HTML",
+                reply_markup=admin_catalog_keyboard(),
+            )
+            context.user_data.pop("admin_catalog_search_mode", None)
+            return
+        
+        text = _format_admin_catalog_items_page(filtered, 0, len(filtered))
+        await update.effective_message.reply_text(
+            text,
+            parse_mode="HTML",
+            reply_markup=admin_catalog_items_keyboard_paged(filtered, 0),
+        )
+        context.user_data.pop("admin_catalog_search_mode", None)
+        return
+    
+    if search_mode == "vendors":
+        all_vendors = db.list_vendors()
+        filtered = [vendor for vendor in all_vendors if search_query in vendor["name"].lower()]
+        
+        if not filtered:
+            await update.effective_message.reply_text(
+                f"🔍 <b>Search Results for Vendors</b>\n\n"
+                f"No vendors found matching '{search_query}'.",
+                parse_mode="HTML",
+                reply_markup=admin_catalog_keyboard(),
+            )
+            context.user_data.pop("admin_catalog_search_mode", None)
+            return
+        
+        text = _format_admin_catalog_vendors_page(filtered, 0, len(filtered))
+        await update.effective_message.reply_text(
+            text,
+            parse_mode="HTML",
+            reply_markup=admin_catalog_vendors_keyboard_paged(filtered, 0),
+        )
+        context.user_data.pop("admin_catalog_search_mode", None)
+        return
+
 async def admin_catalog_edit_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     mode = context.user_data.get("admin_catalog_edit_mode")
     if not mode:
@@ -4370,6 +4435,9 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     if context.user_data.get("admin_catalog_edit_mode"):
         await admin_catalog_edit_router(update, context)
+        return
+    if context.user_data.get("admin_catalog_search_mode"):
+        await admin_catalog_search_router(update, context)
         return
     if context.user_data.get("topup_mode") == "await_amount":
         await topup_amount_step(update, context)
@@ -4510,6 +4578,24 @@ async def admin_panel_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             text=format_admin_additem_help(),
             parse_mode="HTML",
             reply_markup=admin_catalog_keyboard(),
+        )
+        return
+
+    if data == "admin:catalog_search_items":
+        context.user_data["admin_catalog_search_mode"] = "items"
+        await _edit_or_send_callback_message(
+            query,
+            text=format_catalog_search_prompt("items"),
+            parse_mode="HTML",
+        )
+        return
+
+    if data == "admin:catalog_search_vendors":
+        context.user_data["admin_catalog_search_mode"] = "vendors"
+        await _edit_or_send_callback_message(
+            query,
+            text=format_catalog_search_prompt("vendors"),
+            parse_mode="HTML",
         )
         return
 
