@@ -135,6 +135,8 @@ Admin (secret/super):
   - list waiters
 - `/confirm_order <payment_tx_ref>` (mark a paid order as confirmed and dispatch it)
 - `/broadcast <message>` (send announcement text to all users who have interacted with the bot)
+- `/close_waiter_registration` (temporarily block new waiter registrations)
+- `/open_waiter_registration` (reopen waiter registration when needed)
 - Send an image announcement by either:
   - sending a photo with caption `/broadcast <caption>`
   - replying to a photo with `/broadcast <caption>`

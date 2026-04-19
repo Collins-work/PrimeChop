@@ -582,10 +582,14 @@ async def _set_admin_bot_commands(application: Application, chat_id: int) -> Non
             BotCommand("order_analysis", "Admin order analytics"),
             BotCommand("waiter_analysis", "Admin waiter analytics"),
             BotCommand("user_count", "Admin: show total users on bot"),
+            BotCommand("user_details", "Admin: list users with names"),
             BotCommand("clear_orders", "Admin: clear order history"),
             BotCommand("additem", "Add a new menu item"),
             BotCommand("confirm_topup", "Confirm a top-up payment"),
             BotCommand("broadcast", "Send text or image announcement"),
+            BotCommand("pbroadcast", "Send personalized announcement"),
+            BotCommand("close_waiter_registration", "Close new waiter registration"),
+            BotCommand("open_waiter_registration", "Open new waiter registration"),
             BotCommand("waiter_online", "Set waiter online"),
             BotCommand("waiter_offline", "Set waiter offline"),
             BotCommand("waiter_logout", "Exit waiter mode to customer menu"),
@@ -3545,6 +3549,20 @@ async def become_waiter(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=home_keyboard("waiter"),
         )
         return
+
+    registration_open = db.is_waiter_registration_open()
+    registration_status_line = (
+        "🟢 <b>Registration:</b> Open"
+        if registration_open
+        else "🔒 <b>Registration:</b> Closed for now"
+    )
+    registration_note = (
+        ""
+        if registration_open
+        else "\n\n⚠️ New waiter registration is temporarily closed by admin. "
+        "You can still use Login with Code if you were already approved."
+    )
+
     portal_text = (
         "👨‍🍳 <b>Waiter Portal</b>\n\n"
         "Join our delivery team and start earning!\n\n"
@@ -3558,7 +3576,9 @@ async def become_waiter(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Name: Your Full Name\n"
         "Email: yourname@gmail.com\n"
         "Phone: 08012345678\n"
-        "Gender: Male or Female"
+        "Gender: Male or Female\n\n"
+        f"{registration_status_line}"
+        f"{registration_note}"
     )
     await update.effective_message.reply_text(
         portal_text,
@@ -3573,6 +3593,18 @@ async def waiter_portal_callback(update: Update, context: ContextTypes.DEFAULT_T
 
     action = query.data.split(":", 1)[1]
     if action == "register":
+        if not db.is_waiter_registration_open():
+            await _edit_or_send_callback_message(
+                query,
+                text=(
+                    "🔒 <b>Waiter Registration Closed</b>\n\n"
+                    "New waiter registration is temporarily closed by admin.\n"
+                    "If you already have a waiter code, use <b>Login with Code</b>."
+                ),
+                parse_mode="HTML",
+            )
+            return
+
         context.user_data["waiter_register_mode"] = True
         context.user_data.pop("waiter_login_mode", None)
         await _edit_or_send_callback_message(
@@ -3601,6 +3633,13 @@ async def waiter_portal_callback(update: Update, context: ContextTypes.DEFAULT_T
 
 async def waiter_register_details_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.user_data.get("waiter_register_mode"):
+        return
+
+    if not db.is_waiter_registration_open():
+        context.user_data.pop("waiter_register_mode", None)
+        await update.effective_message.reply_text(
+            "🔒 Waiter registration is currently closed by admin. Please try again later."
+        )
         return
 
     user = update.effective_user
@@ -5113,6 +5152,42 @@ async def confirm_topup(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def close_waiter_registration(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if not is_admin(user.id) and not has_super_admin_access(user.id, context):
+        await update.effective_message.reply_text(format_unauthorized(), parse_mode="HTML")
+        return
+
+    if not db.is_waiter_registration_open():
+        await update.effective_message.reply_text(
+            "ℹ️ Waiter registration is already closed."
+        )
+        return
+
+    db.set_waiter_registration_open(False)
+    await update.effective_message.reply_text(
+        "🔒 Waiter registration has been closed. New users can no longer register until you reopen it."
+    )
+
+
+async def open_waiter_registration(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if not is_admin(user.id) and not has_super_admin_access(user.id, context):
+        await update.effective_message.reply_text(format_unauthorized(), parse_mode="HTML")
+        return
+
+    if db.is_waiter_registration_open():
+        await update.effective_message.reply_text(
+            "ℹ️ Waiter registration is already open."
+        )
+        return
+
+    db.set_waiter_registration_open(True)
+    await update.effective_message.reply_text(
+        "🟢 Waiter registration is now open. New users can register from the waiter portal."
+    )
+
+
 async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if not is_admin(user.id) and not has_super_admin_access(user.id, context):
@@ -5193,6 +5268,161 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Skipped/failed: {failed_count}"
         )
     )
+
+
+def _first_name_from_full_name(full_name: str) -> str:
+    normalized = re.sub(r"\s+", " ", (full_name or "").strip())
+    if not normalized:
+        return "there"
+    return normalized.split(" ", 1)[0]
+
+
+def _personalize_broadcast_text(template: str, user_row) -> str:
+    full_name = re.sub(r"\s+", " ", str(user_row["full_name"] or "").strip())
+    first_name = _first_name_from_full_name(full_name)
+    safe_full_name = full_name or first_name
+    return (
+        (template or "")
+        .replace("{name}", safe_full_name)
+        .replace("{full_name}", safe_full_name)
+        .replace("{first_name}", first_name)
+        .replace("{user_id}", str(int(user_row["user_id"] or 0)))
+    )
+
+
+async def personalized_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if not is_admin(user.id) and not has_super_admin_access(user.id, context):
+        text = format_unauthorized()
+        await update.effective_message.reply_text(text, parse_mode="HTML")
+        return
+
+    message = update.effective_message
+    template_text = ""
+    if message:
+        source_text = message.text if message.text is not None else (message.caption or "")
+        if source_text:
+            command_match = re.match(r"^/\w+(?:@\w+)?", source_text)
+            if command_match:
+                template_text = source_text[command_match.end():]
+                if template_text and template_text[0].isspace():
+                    template_text = template_text[1:]
+            else:
+                template_text = source_text
+
+    if not template_text and context.args:
+        template_text = " ".join(context.args)
+
+    photo_to_broadcast = None
+    if message and message.photo:
+        photo_to_broadcast = message.photo[-1].file_id
+    elif message and message.reply_to_message and message.reply_to_message.photo:
+        photo_to_broadcast = message.reply_to_message.photo[-1].file_id
+
+    if not template_text and not photo_to_broadcast:
+        await update.effective_message.reply_text(
+            "Usage:\n"
+            "/pbroadcast <message with placeholders>\n"
+            "or send a photo with caption: /pbroadcast <caption>\n"
+            "or reply to a photo with: /pbroadcast <caption>\n\n"
+            "Placeholders: {name}, {full_name}, {first_name}, {user_id}\n"
+            "Example:\n"
+            "/pbroadcast Hello {first_name}, what are you craving today?"
+        )
+        return
+
+    users = db.list_users_brief()
+    if not users:
+        await update.effective_message.reply_text("No users found to broadcast to yet.")
+        return
+
+    sent_count = 0
+    failed_count = 0
+    for row in users:
+        chat_id = int(row["user_id"])
+        message_text = _personalize_broadcast_text(template_text, row)
+        if photo_to_broadcast:
+            sent = await _safe_send_photo(
+                context.bot,
+                chat_id=chat_id,
+                photo=photo_to_broadcast,
+                caption=message_text or None,
+                parse_mode=None,
+                log_context="personalized_broadcast_photo",
+            )
+        else:
+            sent = await _safe_send_message(
+                context.bot,
+                chat_id=chat_id,
+                text=message_text,
+                parse_mode=None,
+                log_context="personalized_broadcast",
+            )
+        if sent:
+            sent_count += 1
+        else:
+            failed_count += 1
+        await asyncio.sleep(0.05)
+
+    await update.effective_message.reply_text(
+        (
+            "Personalized broadcast complete.\n"
+            f"Delivered: {sent_count}\n"
+            f"Skipped/failed: {failed_count}"
+        )
+    )
+
+
+async def user_details(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    access_state = _admin_analytics_access_state(user.id, context)
+    if access_state == "forbidden":
+        await update.effective_message.reply_text(format_unauthorized(), parse_mode="HTML")
+        return
+    if access_state == "login_required":
+        await update.effective_message.reply_text("Run /admin and login first.")
+        return
+
+    limit = 50
+    if context.args:
+        try:
+            parsed_limit = int(context.args[0])
+            if parsed_limit <= 0:
+                raise ValueError
+            limit = min(parsed_limit, 200)
+        except ValueError:
+            await update.effective_message.reply_text("Usage: /user_details [limit]\nExample: /user_details 100")
+            return
+
+    rows = db.list_users_brief(limit=limit)
+    if not rows:
+        await update.effective_message.reply_text("No users found yet.")
+        return
+
+    lines = [f"👥 <b>User Details</b> (showing {len(rows)} users)", ""]
+    for row in rows:
+        full_name = html.escape(str(row["full_name"] or "Unknown"))
+        role = html.escape(str(row["role"] or "customer"))
+        lines.append(f"• ID {int(row['user_id'])} | {full_name} | role: {role}")
+
+    text = "\n".join(lines)
+    if len(text) <= TELEGRAM_TEXT_SOFT_LIMIT:
+        await update.effective_message.reply_text(text, parse_mode="HTML")
+        return
+
+    chunk = []
+    chunk_len = 0
+    for line in lines:
+        projected = chunk_len + len(line) + 1
+        if projected > TELEGRAM_TEXT_SOFT_LIMIT and chunk:
+            await update.effective_message.reply_text("\n".join(chunk), parse_mode="HTML")
+            chunk = [line]
+            chunk_len = len(line) + 1
+        else:
+            chunk.append(line)
+            chunk_len = projected
+    if chunk:
+        await update.effective_message.reply_text("\n".join(chunk), parse_mode="HTML")
 
 
 async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -6263,6 +6493,8 @@ def main():
     app.add_handler(CommandHandler("wallet", wallet))
     app.add_handler(CommandHandler("topup", topup))
     app.add_handler(CommandHandler("confirm_topup", confirm_topup))
+    app.add_handler(CommandHandler("close_waiter_registration", close_waiter_registration))
+    app.add_handler(CommandHandler("open_waiter_registration", open_waiter_registration))
     app.add_handler(CommandHandler("broadcast", broadcast))
     app.add_handler(CommandHandler("confirm_order", confirm_order_payment))
     app.add_handler(CommandHandler("view_orders", view_orders))
@@ -6271,8 +6503,10 @@ def main():
     app.add_handler(CommandHandler("order_analysis", order_analysis))
     app.add_handler(CommandHandler("waiter_analysis", waiter_analysis))
     app.add_handler(CommandHandler("user_count", user_count))
+    app.add_handler(CommandHandler("user_details", user_details))
     app.add_handler(CommandHandler("clear_orders", clear_orders))
     app.add_handler(CommandHandler("menu", menu))
+    app.add_handler(CommandHandler("pbroadcast", personalized_broadcast))
     app.add_handler(CommandHandler("waiter_online", waiter_online))
     app.add_handler(CommandHandler("waiter_offline", waiter_offline))
     app.add_handler(CommandHandler("waiter_logout", waiter_logout_mode))

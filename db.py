@@ -742,6 +742,26 @@ class Database:
                 )
                 """
             )
+
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS bot_flags (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+
+            now = self.now_iso()
+            conn.execute(
+                """
+                INSERT INTO bot_flags (key, value, updated_at)
+                VALUES ('waiter_registration_open', '1', ?)
+                ON CONFLICT(key) DO NOTHING
+                """,
+                (now,),
+            )
             
             # Create indexes
             conn.execute("CREATE INDEX IF NOT EXISTS idx_orders_customer_id ON orders(customer_id)")
@@ -863,6 +883,29 @@ class Database:
                 (1 if online else 0, now, user_id),
             )
         self._refresh_waiter_registry_export()
+
+    def is_waiter_registration_open(self) -> bool:
+        with self.connection() as conn:
+            row = conn.execute(
+                "SELECT value FROM bot_flags WHERE key='waiter_registration_open' LIMIT 1"
+            ).fetchone()
+            if not row:
+                return True
+            return str(row["value"] or "").strip().lower() in {"1", "true", "yes", "on"}
+
+    def set_waiter_registration_open(self, is_open: bool):
+        now = self.now_iso()
+        with self.connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO bot_flags (key, value, updated_at)
+                VALUES ('waiter_registration_open', ?, ?)
+                ON CONFLICT(key) DO UPDATE SET
+                    value=excluded.value,
+                    updated_at=excluded.updated_at
+                """,
+                ("1" if is_open else "0", now),
+            )
 
     def assign_waiter_invite(self, user_id: int, full_name: str, waiter_code: str, waiter_gender: str | None = None):
         now = self.now_iso()
@@ -1162,6 +1205,28 @@ class Database:
                 "SELECT user_id FROM users ORDER BY user_id ASC"
             ).fetchall()
         return [int(row["user_id"]) for row in rows]
+
+    def list_users_brief(self, limit: int | None = None) -> list[sqlite3.Row]:
+        with self.connection() as conn:
+            if limit is None:
+                rows = conn.execute(
+                    """
+                    SELECT user_id, full_name, role, created_at
+                    FROM users
+                    ORDER BY user_id ASC
+                    """
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT user_id, full_name, role, created_at
+                    FROM users
+                    ORDER BY user_id ASC
+                    LIMIT ?
+                    """,
+                    (int(limit),),
+                ).fetchall()
+        return rows
 
     def get_user_by_waiter_code(self, waiter_code: str) -> Optional[sqlite3.Row]:
         with self.connection() as conn:
