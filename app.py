@@ -64,7 +64,6 @@ from ui import (
     format_start_banner_caption,
         format_catalog_items_list,
         format_catalog_management_menu,
-        format_catalog_search_prompt,
         format_item_management_options,
         format_item_removed_success,
         format_item_removal_confirmation,
@@ -1682,6 +1681,15 @@ def admin_catalog_keyboard() -> InlineKeyboardMarkup:
             [InlineKeyboardButton("�📦 Catalog Summary", callback_data="admin:catalog_summary")],
             [InlineKeyboardButton("🔙 Back to Admin Home", callback_data="admin:menu")],
         ]
+    )
+
+
+def format_catalog_search_prompt(search_type: str) -> str:
+    search_for = "items" if search_type == "items" else "vendors"
+    return (
+        f"🔍 <b>Search {search_for.title()}</b>\n\n"
+        f"Type the name of the {search_for} you want to find.\n"
+        f"(e.g., 'Jollof Rice' or 'Kitchen Masters')"
     )
 
 
