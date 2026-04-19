@@ -5854,6 +5854,9 @@ async def claim_order_callback(update: Update, context: ContextTypes.DEFAULT_TYP
                 eta_due_text = datetime.fromisoformat(order["eta_due_at"]).strftime("%I:%M %p")
         except Exception:
             eta_due_text = ""
+        # Get customer name
+        customer = db.get_user(order["customer_id"])
+        customer_name = customer["full_name"] if customer else "Unknown customer"
         await context.bot.send_message(
             chat_id=order["customer_id"],
             text=format_order_claimed(order_id, waiter_name, eta_minutes=eta_minutes, eta_due_at=eta_due_text),
@@ -5872,6 +5875,7 @@ async def claim_order_callback(update: Update, context: ContextTypes.DEFAULT_TYP
                 order_details=order["order_details"] or "",
                 eta_minutes=eta_minutes,
                 eta_due_at=eta_due_text,
+                customer_name=customer_name,
             ),
             parse_mode="HTML",
             reply_markup=waiter_claimed_order_actions_keyboard(order_id),
