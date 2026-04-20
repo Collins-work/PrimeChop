@@ -4537,9 +4537,19 @@ async def admin_panel_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     data = query.data
     parts = data.split(":")
     waiter_review_action = len(parts) == 3 and parts[1] in {"approve_waiter", "reject_waiter"}
+    readonly_admin_actions = {
+        "admin:menu",
+        "admin:menu_analytics",
+        "admin:order_analytics",
+        "admin:order_tracker",
+        "admin:waiter_analytics",
+        "admin:menu_quick",
+    }
 
     if not has_super_admin_access(user.id, context):
         if waiter_review_action and is_admin(user.id):
+            pass
+        elif is_admin(user.id) and data in readonly_admin_actions:
             pass
         else:
             await query.answer("Run /admin first and login.", show_alert=True)
