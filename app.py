@@ -3139,7 +3139,7 @@ def format_waiter_active_order_board(rows: list) -> str:
 
 def format_admin_order_tracker(rows: list) -> str:
     if not rows:
-        return "📦 <b>Order Tracker</b>\n\nNo claimed or completed orders yet."
+        return "📦 <b>Order Tracker</b>\n\nNo active or completed paid orders yet."
 
     lines = ["📦 <b>Order Tracker</b>", "Brief view of claimed and completed orders."]
     for row in rows:
@@ -3158,7 +3158,12 @@ def format_admin_order_tracker(rows: list) -> str:
         if order_details:
             details_block = f"\n🧾 <b>Details:</b>\n{html.escape(order_details, quote=False)}"
 
-        if row["status"] == "claimed":
+        if row["status"] == "pending_waiter":
+            status = "Awaiting waiter"
+            status_emoji = "🕓"
+            created_at = _format_tracker_datetime_12h(row["created_at"] or row["updated_at"] or "")
+            time_block = f"🕒 <b>Created:</b> {created_at}\n⏳ <b>Dispatch:</b> Waiting for waiter to claim"
+        elif row["status"] == "claimed":
             status = "In progress"
             status_emoji = "🚚"
             accepted_at = _format_tracker_datetime_12h(row["accepted_at"] or row["updated_at"] or "")
@@ -3187,7 +3192,7 @@ def format_admin_order_tracker(rows: list) -> str:
             f"🍽 <b>Item:</b> {item_name}\n"
             f"🏪 <b>Vendor:</b> {vendor_name}\n"
             f"💰 <b>Amount:</b> ₦{amount:,}\n"
-            f"👤 <b>Claimed by:</b> {waiter_name} [{waiter_code}]\n"
+            f"👤 <b>Waiter:</b> {waiter_name} [{waiter_code}]\n"
             f"🙍 <b>Customer:</b> {customer_name}\n"
             f"📍 <b>Delivery:</b> {hall_name} Room {room_number}\n"
             f"{time_block}\n"

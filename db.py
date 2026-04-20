@@ -2056,7 +2056,7 @@ class Database:
                 LEFT JOIN menu_items m ON m.id = o.item_id
                 LEFT JOIN users c ON c.user_id = o.customer_id
                 LEFT JOIN users w ON w.user_id = o.waiter_id
-                WHERE o.status IN ('claimed', 'completed')
+                WHERE o.status IN ('pending_waiter', 'claimed', 'completed')
                 ORDER BY o.id DESC
                 LIMIT ?
                 """,
