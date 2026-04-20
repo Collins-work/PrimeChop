@@ -1608,15 +1608,18 @@ def _format_delivery_time_text_12h(value: str) -> str:
     return _format_hhmm_12h(text)
 
 
-def _format_tracker_datetime_12h(value: str) -> str:
-    text = (value or "").strip()
+def _format_tracker_datetime_12h(value) -> str:
+    if isinstance(value, datetime):
+        return value.strftime("%Y-%m-%d %I:%M%p").lstrip("0").lower()
+
+    text = str(value or "").strip()
     if not text:
         return "N/A"
 
     try:
         dt = datetime.fromisoformat(text)
         return dt.strftime("%Y-%m-%d %I:%M%p").lstrip("0").lower()
-    except ValueError:
+    except (TypeError, ValueError):
         pass
 
     m = re.match(r"^(\d{1,2}:\d{2})", text)

@@ -1803,10 +1803,12 @@ class Database:
             created_at = row["created_at"]
 
             created_dt = None
-            if created_at:
+            if isinstance(created_at, datetime):
+                created_dt = created_at
+            elif created_at:
                 try:
-                    created_dt = datetime.fromisoformat(created_at)
-                except ValueError:
+                    created_dt = datetime.fromisoformat(str(created_at))
+                except (TypeError, ValueError):
                     created_dt = None
 
             if created_dt is not None:
