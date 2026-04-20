@@ -3141,13 +3141,14 @@ def format_admin_order_tracker(rows: list) -> str:
     if not rows:
         return "📦 <b>Order Tracker</b>\n\nNo active or completed paid orders yet."
 
-    lines = ["📦 <b>Order Tracker</b>", "Brief view of claimed and completed orders."]
+    lines = ["📦 <b>Order Tracker</b>", "Brief view of awaiting, claimed, and completed orders."]
     for row in rows:
         order_ref = row["order_ref"] or str(row["id"])
         item_name = row["item_name"] or f"Item #{row['id']}"
         vendor_name = row["cafeteria_name"] or "Unknown vendor"
         hall_name = row["hall_name"] or "Unknown hall"
         room_number = row["room_number"] or "N/A"
+        delivery_time = _format_delivery_time_text_12h(row["delivery_time"] or "")
         waiter_code = row["waiter_code"] or "N/A"
         waiter_name = row["waiter_name"] or "Unassigned"
         customer_name = row["customer_name"] or "Unknown customer"
@@ -3192,6 +3193,7 @@ def format_admin_order_tracker(rows: list) -> str:
             f"🍽 <b>Item:</b> {item_name}\n"
             f"🏪 <b>Vendor:</b> {vendor_name}\n"
             f"💰 <b>Amount:</b> ₦{amount:,}\n"
+            f"🕐 <b>Delivery Time:</b> {delivery_time or 'Not set'}\n"
             f"👤 <b>Waiter:</b> {waiter_name} [{waiter_code}]\n"
             f"🙍 <b>Customer:</b> {customer_name}\n"
             f"📍 <b>Delivery:</b> {hall_name} Room {room_number}\n"

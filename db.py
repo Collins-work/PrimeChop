@@ -2039,6 +2039,7 @@ class Database:
                     o.amount,
                     o.cafeteria_name,
                     o.order_details,
+                    o.delivery_time,
                     o.hall_name,
                     o.room_number,
                     o.customer_rating,
