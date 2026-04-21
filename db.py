@@ -1731,6 +1731,8 @@ class Database:
                     o.cafeteria_name,
                     o.hall_name,
                     o.room_number,
+                    o.delivery_time,
+                    o.order_details,
                     m.name AS item_name,
                     o.created_at
                 FROM orders o

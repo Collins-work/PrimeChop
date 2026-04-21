@@ -5099,7 +5099,13 @@ async def view_orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines = ["🧾 <b>Your Claimed Orders</b>", "Mark delivery complete using /complete <order_id> or tap a Complete button."]
         for row in claimed_orders:
             order_ref = row["order_ref"] or str(row["id"])
+            hall_name = row["hall_name"] or "Unknown hall"
+            room_number = row["room_number"] or "N/A"
+            delivery_time = _format_delivery_time_text_12h(row["delivery_time"] or "")
             lines.append(f"#{order_ref} (ID: {row['id']}) - ₦{int(row['amount'] or 0):,}")
+            lines.append(f"   Delivery: {hall_name} Room {room_number}")
+            if delivery_time:
+                lines.append(f"   Time: {delivery_time}")
         await update.effective_message.reply_text(
             "\n".join(lines),
             parse_mode="HTML",
