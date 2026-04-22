@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS waiter_requests (
     details TEXT,
     status TEXT NOT NULL DEFAULT 'pending',
     reviewed_by BIGINT,
+    reason TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );

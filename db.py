@@ -720,6 +720,7 @@ class Database:
                     details TEXT,
                     status TEXT NOT NULL DEFAULT 'pending',
                     reviewed_by BIGINT,
+                    reason TEXT,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     FOREIGN KEY (user_id) REFERENCES users(user_id),
@@ -727,6 +728,7 @@ class Database:
                 )
                 """
             )
+            conn.execute("ALTER TABLE waiter_requests ADD COLUMN IF NOT EXISTS reason TEXT")
 
             conn.execute(
                 """
@@ -1093,6 +1095,13 @@ class Database:
                 (limit,),
             ).fetchall()
 
+    def get_waiter_request(self, request_id: int) -> Optional[sqlite3.Row]:
+        with self.connection() as conn:
+            return conn.execute(
+                "SELECT * FROM waiter_requests WHERE id=?",
+                (request_id,),
+            ).fetchone()
+
     def get_latest_waiter_request(self, user_id: int) -> Optional[sqlite3.Row]:
         with self.connection() as conn:
             return conn.execute(
@@ -1162,7 +1171,7 @@ class Database:
         self._mirror_waiter_request_by_user_id(int(request["user_id"]))
         return updated
 
-    def reject_waiter_request(self, request_id: int, admin_user_id: int) -> Optional[sqlite3.Row]:
+    def reject_waiter_request(self, request_id: int, admin_user_id: int, reason: str) -> Optional[sqlite3.Row]:
         now = self.now_iso()
         with self.connection() as conn:
             request = conn.execute(
@@ -1175,10 +1184,10 @@ class Database:
             conn.execute(
                 """
                 UPDATE waiter_requests
-                SET status='rejected', reviewed_by=?, updated_at=?
+                SET status='rejected', reviewed_by=?, reason=?, updated_at=?
                 WHERE id=?
                 """,
-                (admin_user_id, now, request_id),
+                (admin_user_id, reason, now, request_id),
             )
             updated = conn.execute(
                 "SELECT * FROM waiter_requests WHERE id=?",

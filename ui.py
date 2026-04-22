@@ -341,6 +341,16 @@ def format_become_waiter_success(name: str) -> str:
     )
 
 
+def format_waiter_rejection_notice(reason: str) -> str:
+    """Format a waiter registration rejection notice."""
+    return (
+        f"{EMOJI_INFO} <b>Waiter Registration Update</b>\n\n"
+        "Thank you for your interest in joining PrimeChop as a waiter.\n\n"
+        f"<b>Reason:</b> {escape(reason)}\n\n"
+        "You can try again later if a new opening becomes available."
+    )
+
+
 def format_customer_support() -> str:
     """Format customer support help text."""
     return (

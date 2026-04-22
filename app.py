@@ -61,6 +61,7 @@ from ui import (
     format_admin_additem_start,
     format_admin_additem_success,
     format_become_waiter_success,
+    format_waiter_rejection_notice,
     format_start_banner_caption,
         format_catalog_items_list,
         format_catalog_management_menu,
@@ -137,6 +138,7 @@ TELEGRAM_TEXT_SOFT_LIMIT = 3800
 ADMIN_CATALOG_PAGE_SIZE = 12
 ADMIN_WAITER_IMPERSONATION_PAGE_SIZE = 10
 ORDER_TIME_CALLBACK_PATTERN = r"^order:time:(?:\d{4}-\d{4}|\d{1,2}:\d{2}-\d{1,2}:\d{2})$"
+DEFAULT_WAITER_REJECTION_REASON = "We're currently full and can't accept new waiter registrations right now."
 
 DELIVERY_TIME_SLOTS = [
     ("17:00", "18:00"),
@@ -4190,6 +4192,53 @@ async def admin_deactivate_router(update: Update, context: ContextTypes.DEFAULT_
     )
 
 
+def _normalize_waiter_rejection_reason(text: str) -> str:
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return DEFAULT_WAITER_REJECTION_REASON
+
+    if cleaned.casefold() in {"full", "capacity", "we are full", "we're full", "currently full"}:
+        return DEFAULT_WAITER_REJECTION_REASON
+
+    return cleaned
+
+
+async def admin_waiter_rejection_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.user_data.get("admin_waiter_rejection_mode"):
+        return
+
+    user = update.effective_user
+    if not has_super_admin_access(user.id, context):
+        context.user_data.pop("admin_waiter_rejection_mode", None)
+        return
+
+    text = (update.effective_message.text or "").strip()
+    reason = _normalize_waiter_rejection_reason(text)
+    request_id = int(context.user_data["admin_waiter_rejection_mode"]["request_id"])
+    result = db.reject_waiter_request(request_id, user.id, reason)
+    if not result:
+        context.user_data.pop("admin_waiter_rejection_mode", None)
+        await update.effective_message.reply_text("Request already processed or not found.")
+        return
+
+    context.user_data.pop("admin_waiter_rejection_mode", None)
+    await update.effective_message.reply_text(
+        (
+            "❌ Waiter request rejected.\n\n"
+            f"Request ID: {request_id}\n"
+            f"Reason sent: {reason}"
+        ),
+        reply_markup=admin_waiter_management_keyboard(),
+    )
+    await _safe_send_message(
+        context.bot,
+        chat_id=int(result["user_id"]),
+        text=format_waiter_rejection_notice(reason),
+        parse_mode="HTML",
+        log_context="waiter rejection notification",
+    )
+
+
 async def admin_manual_earnings_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.user_data.get("admin_manual_earnings_mode"):
         return
@@ -4510,6 +4559,9 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     if context.user_data.get("admin_manual_earnings_mode"):
         await admin_manual_earnings_router(update, context)
+        return
+    if context.user_data.get("admin_waiter_rejection_mode"):
+        await admin_waiter_rejection_router(update, context)
         return
     if context.user_data.get("admin_waiter_gender_mode"):
         await admin_waiter_gender_router(update, context)
@@ -5004,16 +5056,22 @@ async def admin_panel_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             )
             return
 
-        result = db.reject_waiter_request(request_id, user.id)
-        if not result:
+        request = db.get_waiter_request(request_id)
+        if not request:
             await context.bot.send_message(chat_id=user.id, text="Request already processed or not found.")
             return
-        await context.bot.send_message(chat_id=user.id, text=f"❌ Waiter request {request_id} rejected.")
-        await _safe_send_message(
-            context.bot,
-            chat_id=int(result["user_id"]),
-            text="Your waiter request was not approved this time. Contact support for details.",
-            log_context="waiter rejection notification",
+
+        context.user_data["admin_waiter_rejection_mode"] = {
+            "request_id": request_id,
+            "user_id": int(request["user_id"]),
+        }
+        await context.bot.send_message(
+            chat_id=user.id,
+            text=(
+                "✍️ Send the rejection reason for this waiter request.\n\n"
+                f"Request ID: {request_id}\n"
+                "You can send a short reason, or reply with 'full' to use the default capacity message."
+            ),
         )
 
 
