@@ -747,6 +747,26 @@ class Database:
 
             conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS customer_messages (
+                    id SERIAL PRIMARY KEY,
+                    user_id BIGINT NOT NULL,
+                    user_name TEXT NOT NULL,
+                    message_text TEXT NOT NULL,
+                    message_type TEXT DEFAULT 'feedback',
+                    broadcast_context TEXT,
+                    admin_reply TEXT,
+                    admin_reply_by BIGINT,
+                    status TEXT NOT NULL DEFAULT 'unread',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY (user_id) REFERENCES users(user_id),
+                    FOREIGN KEY (admin_reply_by) REFERENCES users(user_id)
+                )
+                """
+            )
+
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS bot_flags (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL,
@@ -777,6 +797,9 @@ class Database:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_waiter_earning_adjustments_waiter_id ON waiter_earning_adjustments(waiter_user_id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_users_waiter_code ON users(waiter_code)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_menu_items_vendor_id ON menu_items(vendor_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_customer_messages_user_id ON customer_messages(user_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_customer_messages_status ON customer_messages(status)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_customer_messages_created_at ON customer_messages(created_at DESC)")
             
         self.refresh_human_readable_exports()
 
@@ -2216,3 +2239,96 @@ class Database:
             order_id = int(inserted["id"])
             self._mirror_order_by_id(order_id)
             return order_id
+
+    # ==================== Customer Messages ====================
+    def add_customer_message(
+        self,
+        user_id: int,
+        user_name: str,
+        message_text: str,
+        message_type: str = "feedback",
+        broadcast_context: str | None = None,
+    ) -> int:
+        """Save a customer message to the database."""
+        now = self.now_iso()
+        with self.connection() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO customer_messages (
+                    user_id, user_name, message_text, message_type, broadcast_context,
+                    status, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, 'unread', ?, ?)
+                RETURNING id
+                """,
+                (user_id, user_name, message_text, message_type, broadcast_context, now, now),
+            )
+            inserted = cursor.fetchone()
+            return int(inserted["id"])
+
+    def get_customer_messages(self, limit: int = 50, status: str | None = None) -> list[sqlite3.Row]:
+        """Get all customer messages, optionally filtered by status."""
+        with self.connection() as conn:
+            if status:
+                rows = conn.execute(
+                    """
+                    SELECT id, user_id, user_name, message_text, message_type, broadcast_context,
+                           admin_reply, admin_reply_by, status, created_at, updated_at
+                    FROM customer_messages
+                    WHERE status=?
+                    ORDER BY created_at DESC
+                    LIMIT ?
+                    """,
+                    (status, limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT id, user_id, user_name, message_text, message_type, broadcast_context,
+                           admin_reply, admin_reply_by, status, created_at, updated_at
+                    FROM customer_messages
+                    ORDER BY created_at DESC
+                    LIMIT ?
+                    """,
+                    (limit,),
+                ).fetchall()
+        return rows
+
+    def get_unread_message_count(self) -> int:
+        """Count unread customer messages."""
+        with self.connection() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) as count FROM customer_messages WHERE status='unread'"
+            ).fetchone()
+            return int(row["count"] or 0) if row else 0
+
+    def mark_message_as_read(self, message_id: int) -> bool:
+        """Mark a message as read."""
+        now = self.now_iso()
+        with self.connection() as conn:
+            cursor = conn.execute(
+                "UPDATE customer_messages SET status='read', updated_at=? WHERE id=?",
+                (now, message_id),
+            )
+            return cursor.rowcount > 0
+
+    def add_admin_reply(self, message_id: int, reply_text: str, admin_user_id: int) -> bool:
+        """Add admin reply to a customer message."""
+        now = self.now_iso()
+        with self.connection() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE customer_messages
+                SET admin_reply=?, admin_reply_by=?, status='replied', updated_at=?
+                WHERE id=?
+                """,
+                (reply_text, admin_user_id, now, message_id),
+            )
+            return cursor.rowcount > 0
+
+    def get_customer_message(self, message_id: int) -> Optional[sqlite3.Row]:
+        """Get a single customer message."""
+        with self.connection() as conn:
+            return conn.execute(
+                "SELECT * FROM customer_messages WHERE id=?",
+                (message_id,),
+            ).fetchone()

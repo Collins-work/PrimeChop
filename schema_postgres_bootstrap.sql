@@ -166,3 +166,21 @@ CREATE TABLE IF NOT EXISTS waiter_earning_adjustments (
 );
 
 CREATE INDEX IF NOT EXISTS idx_waiter_earning_adjustments_waiter_id ON waiter_earning_adjustments(waiter_user_id);
+
+CREATE TABLE IF NOT EXISTS customer_messages (
+    id BIGSERIAL PRIMARY KEY,
+    user_id BIGINT NOT NULL REFERENCES users(user_id),
+    user_name TEXT NOT NULL,
+    message_text TEXT NOT NULL,
+    message_type TEXT NOT NULL DEFAULT 'feedback',
+    broadcast_context TEXT,
+    admin_reply TEXT,
+    admin_reply_by BIGINT REFERENCES users(user_id),
+    status TEXT NOT NULL DEFAULT 'unread',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_customer_messages_user_id ON customer_messages(user_id);
+CREATE INDEX IF NOT EXISTS idx_customer_messages_status ON customer_messages(status);
+CREATE INDEX IF NOT EXISTS idx_customer_messages_created_at ON customer_messages(created_at DESC);

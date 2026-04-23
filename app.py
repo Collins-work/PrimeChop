@@ -108,6 +108,11 @@ from ui import (
     format_cart_view,
     format_wallet_info,
     format_waiter_claimed_order,
+    format_broadcast_feedback_prompt,
+    format_customer_message_list,
+    format_customer_message_detail,
+    format_send_reply_prompt,
+    format_reply_sent_success,
     format_checkout_payment_choice,
     cart_actions_keyboard,
     cart_hall_selection_keyboard,
@@ -4566,6 +4571,12 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get("admin_waiter_gender_mode"):
         await admin_waiter_gender_router(update, context)
         return
+    if context.user_data.get("admin_reply_mode"):
+        await handle_admin_reply(update, context)
+        return
+    if context.user_data.get("feedback_mode"):
+        await customer_feedback_handler(update, context)
+        return
     if context.user_data.get("waiter_register_mode") or context.user_data.get("waiter_login_mode"):
         await waiter_portal_router(update, context)
         return
@@ -5461,6 +5472,11 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sent_count = 0
     failed_count = 0
     for chat_id in chat_ids:
+        # Build feedback keyboard
+        feedback_keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("💬 Send Feedback", callback_data=f"broadcast:feedback:{int(chat_id)}")],
+        ])
+        
         if photo_to_broadcast:
             sent = await _safe_send_photo(
                 context.bot,
@@ -5468,6 +5484,7 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 photo=photo_to_broadcast,
                 caption=message_text or None,
                 parse_mode=None,
+                reply_markup=feedback_keyboard,
                 log_context="broadcast_photo",
             )
         else:
@@ -5476,6 +5493,7 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 chat_id=int(chat_id),
                 text=message_text,
                 parse_mode=None,
+                reply_markup=feedback_keyboard,
                 log_context="broadcast",
             )
         if sent:
@@ -5596,7 +5614,214 @@ async def personalized_broadcast(update: Update, context: ContextTypes.DEFAULT_T
     )
 
 
-async def user_details(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def view_customer_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin command to view customer feedback messages."""
+    user = update.effective_user
+    if not is_admin(user.id) and not has_super_admin_access(user.id, context):
+        text = format_unauthorized()
+        await update.effective_message.reply_text(text, parse_mode="HTML")
+        return
+
+    # Get status filter from args if provided
+    status_filter = None
+    if context.args:
+        status_filter = context.args[0].lower()
+        if status_filter not in ["unread", "read", "replied", "all"]:
+            await update.effective_message.reply_text(
+                "Usage: /view_messages [status]\n"
+                "Status: unread | read | replied | all (default: all)"
+            )
+            return
+        if status_filter == "all":
+            status_filter = None
+
+    # Get messages from database
+    messages = db.get_customer_messages(limit=100, status=status_filter)
+    
+    if not messages:
+        await update.effective_message.reply_text(
+            "📭 No customer messages found.",
+            parse_mode="HTML"
+        )
+        return
+
+    # Display summary
+    unread_count = db.get_unread_message_count()
+    text = (
+        f"💬 <b>Customer Messages</b>\n\n"
+        f"Total messages: {len(messages)}\n"
+        f"Unread: {unread_count}\n\n"
+    )
+
+    # List messages
+    for i, msg in enumerate(messages[:20], 1):  # Show top 20
+        user_name = html.escape(str(msg.get("user_name", "Unknown") or "Unknown"))
+        message_text = (msg.get("message_text", "") or "")[:50]
+        message_text = html.escape(message_text)
+        status = msg.get("status", "unread")
+        status_emoji = "🔴" if status == "unread" else "✅" if status == "replied" else "⚪"
+        
+        text += f"{status_emoji} <b>#{i}.</b> {user_name}\n"
+        text += f"   <code>{message_text}...</code>\n"
+
+    if len(messages) > 20:
+        text += f"\n... and {len(messages) - 20} more message(s)."
+        text += "\n\nUse /view_message <ID> to read a specific message.\nUse /reply_message <ID> to send a reply."
+
+    await update.effective_message.reply_text(text, parse_mode="HTML")
+
+
+async def view_single_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin command to view a single customer message with full details."""
+    user = update.effective_user
+    if not is_admin(user.id) and not has_super_admin_access(user.id, context):
+        text = format_unauthorized()
+        await update.effective_message.reply_text(text, parse_mode="HTML")
+        return
+
+    if not context.args:
+        await update.effective_message.reply_text(
+            "Usage: /view_message <message_id>\n"
+            "Example: /view_message 5"
+        )
+        return
+
+    try:
+        message_id = int(context.args[0])
+    except ValueError:
+        await update.effective_message.reply_text("Message ID must be a number.")
+        return
+
+    message = db.get_customer_message(message_id)
+    if not message:
+        await update.effective_message.reply_text("Message not found.")
+        return
+
+    # Mark as read
+    db.mark_message_as_read(message_id)
+
+    # Format and send message details
+    text = format_customer_message_detail(message)
+    
+    reply_markup = InlineKeyboardMarkup([
+        [InlineKeyboardButton("💬 Send Reply", callback_data=f"cmsg:reply:{message_id}")],
+        [InlineKeyboardButton("↩️ Back to Messages", callback_data="cmsg:list")],
+    ])
+
+    await update.effective_message.reply_text(text, parse_mode="HTML", reply_markup=reply_markup)
+
+
+async def customer_message_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle inline callbacks for customer messages."""
+    query = update.callback_query
+    await query.answer()
+
+    user = query.from_user
+    if not is_admin(user.id) and not has_super_admin_access(user.id, context):
+        await query.answer("Unauthorized", show_alert=True)
+        return
+
+    data = query.data
+    parts = data.split(":")
+
+    if len(parts) < 2:
+        return
+
+    action = parts[1]
+
+    if action == "list":
+        messages = db.get_customer_messages(limit=100)
+        text = format_customer_message_list(messages, show_replies=True)
+        
+        reply_markup = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔄 Refresh", callback_data="cmsg:list")],
+        ])
+        
+        await query.edit_message_text(text, parse_mode="HTML", reply_markup=reply_markup)
+
+    elif action == "reply" and len(parts) >= 3:
+        message_id = int(parts[2])
+        message = db.get_customer_message(message_id)
+        
+        if not message:
+            await query.answer("Message not found.", show_alert=True)
+            return
+
+        user_name = message.get("user_name", "Unknown") or "Unknown"
+        
+        # Set reply mode in context
+        context.user_data["admin_reply_mode"] = True
+        context.user_data["admin_reply_message_id"] = message_id
+        context.user_data["admin_reply_customer_name"] = user_name
+
+        text = format_send_reply_prompt(user_name)
+        await query.edit_message_text(text, parse_mode="HTML")
+
+
+async def handle_admin_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle admin sending reply to customer message."""
+    user = update.effective_user
+    message = update.effective_message
+
+    if not is_admin(user.id) and not has_super_admin_access(user.id, context):
+        await message.reply_text(format_unauthorized(), parse_mode="HTML")
+        return
+
+    if not message.text:
+        await message.reply_text("Please send a text reply.")
+        return
+
+    message_id = context.user_data.get("admin_reply_message_id")
+    customer_name = context.user_data.get("admin_reply_customer_name", "Customer")
+
+    if not message_id:
+        await message.reply_text("Reply session expired. Use /view_message <ID> again.")
+        return
+
+    # Get the original message to get customer user_id
+    original_msg = db.get_customer_message(message_id)
+    if not original_msg:
+        await message.reply_text("Original message not found.")
+        return
+
+    reply_text = message.text.strip()
+    customer_user_id = original_msg.get("user_id")
+
+    # Save reply to database
+    success = db.add_admin_reply(message_id, reply_text, user.id)
+
+    if success:
+        # Clear reply mode
+        context.user_data.pop("admin_reply_mode", None)
+        context.user_data.pop("admin_reply_message_id", None)
+        context.user_data.pop("admin_reply_customer_name", None)
+
+        # Confirm to admin
+        await message.reply_text(
+            format_reply_sent_success(customer_name),
+            parse_mode="HTML"
+        )
+
+        # Send reply notification to customer
+        try:
+            await context.bot.send_message(
+                chat_id=customer_user_id,
+                text=(
+                    f"💬 <b>Reply from Support Team</b>\n\n"
+                    f"{html.escape(reply_text)}"
+                ),
+                parse_mode="HTML",
+            )
+        except Exception as e:
+            logger.warning(f"Could not send reply notification to customer {customer_user_id}: {e}")
+            await message.reply_text(
+                f"⚠️ Reply saved but could not notify customer. They may be blocked or inactive."
+            )
+    else:
+        await message.reply_text("Failed to save reply. Please try again.")
+
+
+
     user = update.effective_user
     access_state = _admin_analytics_access_state(user.id, context)
     if access_state == "forbidden":
@@ -6231,6 +6456,63 @@ async def order_rating_callback(update: Update, context: ContextTypes.DEFAULT_TY
     )
 
 
+async def broadcast_feedback_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle customer clicking 'Send Feedback' button after broadcast."""
+    query = update.callback_query
+    await query.answer()
+
+    user = query.from_user
+    db.upsert_user(user.id, user.full_name, role=user_role(user.id))
+
+    # Set feedback mode and broadcast context
+    context.user_data["feedback_mode"] = True
+    context.user_data["broadcast_context"] = query.data  # Store the broadcast data as context
+
+    await query.edit_message_text(
+        format_broadcast_feedback_prompt(),
+        parse_mode="HTML",
+    )
+
+
+async def customer_feedback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle customer message submission for feedback."""
+    user = update.effective_user
+    message = update.effective_message
+    
+    if not message or not message.text:
+        await message.reply_text("Please send a text message for your feedback.")
+        return
+
+    # Save the feedback to database
+    db.upsert_user(user.id, user.full_name, role=user_role(user.id))
+    
+    feedback_text = message.text.strip()
+    broadcast_context = context.user_data.get("broadcast_context", "")
+    
+    try:
+        db.add_customer_message(
+            user_id=user.id,
+            user_name=user.full_name or f"User {user.id}",
+            message_text=feedback_text,
+            message_type="broadcast_feedback",
+            broadcast_context=broadcast_context,
+        )
+        
+        # Clear feedback mode
+        context.user_data.pop("feedback_mode", None)
+        context.user_data.pop("broadcast_context", None)
+        
+        # Send confirmation
+        await message.reply_text(
+            "✅ <b>Thank You!</b>\n\n"
+            "Your feedback has been received and will be reviewed by our team soon.",
+            parse_mode="HTML",
+        )
+    except Exception as e:
+        logger.error(f"Failed to save customer message: {e}")
+        await message.reply_text("Sorry, there was an error saving your feedback. Please try again.")
+
+
 async def topup_preset_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -6723,6 +7005,8 @@ def main():
     app.add_handler(CommandHandler("close_waiter_registration", close_waiter_registration))
     app.add_handler(CommandHandler("open_waiter_registration", open_waiter_registration))
     app.add_handler(CommandHandler("broadcast", broadcast))
+    app.add_handler(CommandHandler("view_messages", view_customer_messages))
+    app.add_handler(CommandHandler("view_message", view_single_message))
     app.add_handler(CommandHandler("confirm_order", confirm_order_payment))
     app.add_handler(CommandHandler("view_orders", view_orders))
     app.add_handler(CommandHandler("waiters", waiters_db))
@@ -6754,6 +7038,8 @@ def main():
     app.add_handler(CallbackQueryHandler(waiter_complete_callback, pattern=r"^complete_claim:\d+$"))
     app.add_handler(CallbackQueryHandler(waiter_abandon_callback, pattern=r"^abandon_claim:\d+$"))
     app.add_handler(CallbackQueryHandler(order_rating_callback, pattern=r"^rate:\d+:[1-5]$"))
+    app.add_handler(CallbackQueryHandler(broadcast_feedback_callback, pattern=r"^broadcast:feedback:\d+$"))
+    app.add_handler(CallbackQueryHandler(customer_message_callback, pattern=r"^cmsg:.*$"))
     app.add_handler(CallbackQueryHandler(mock_payment_confirm_callback, pattern=r"^payconfirm:(topup|order):[A-Za-z0-9_]+$"))
     app.add_handler(CallbackQueryHandler(topup_preset_callback, pattern=r"^topup:\d+$"))
     app.add_handler(CallbackQueryHandler(topup_action_callback, pattern=r"^topup:(start|custom)$"))

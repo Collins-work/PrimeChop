@@ -997,3 +997,122 @@ def format_item_management_options(item_id: int, item_name: str) -> str:
 def separator() -> str:
     """Get a visual separator."""
     return EMOJI_DIVIDER
+
+
+# ==================== CUSTOMER MESSAGES ====================
+def format_customer_message_list(messages: list, show_replies: bool = False) -> str:
+    """Format list of customer messages for admin view."""
+    if not messages:
+        return f"{EMOJI_INFO} No messages from customers yet."
+    
+    lines = [f"💬 <b>Customer Messages</b>", f"Total: {len(messages)} message(s)", ""]
+    
+    for i, msg in enumerate(messages, 1):
+        user_name = msg.get("user_name", "Unknown") or "Unknown"
+        user_id = msg.get("user_id", "?")
+        message_text = (msg.get("message_text", "") or "")[:100]
+        status = msg.get("status", "unread")
+        created_at = msg.get("created_at", "")
+        
+        # Format timestamp if available
+        timestamp = ""
+        if isinstance(created_at, str) and created_at:
+            try:
+                from datetime import datetime
+                dt = datetime.fromisoformat(created_at)
+                timestamp = dt.strftime("%b %d, %H:%M")
+            except:
+                timestamp = str(created_at)[:10]
+        
+        status_emoji = "🟡" if status == "unread" else "✅" if status == "replied" else "🔵"
+        lines.append(f"{status_emoji} <b>#{i}. {escape(user_name)}</b> (ID: {user_id})")
+        lines.append(f"   <i>{timestamp}</i>")
+        lines.append(f"   \"{escape(message_text)}...\"")
+        
+        if show_replies and msg.get("admin_reply"):
+            reply = (msg.get("admin_reply", "") or "")[:80]
+            lines.append(f"   💬 <b>Reply:</b> {escape(reply)}...")
+        
+        lines.append("")
+    
+    return "\n".join(lines)
+
+
+def format_customer_message_detail(message: dict) -> str:
+    """Format detailed view of a single customer message."""
+    user_name = message.get("user_name", "Unknown") or "Unknown"
+    user_id = message.get("user_id", "?")
+    message_text = message.get("message_text", "") or "(empty)"
+    message_type = message.get("message_type", "feedback") or "feedback"
+    created_at = message.get("created_at", "")
+    status = message.get("status", "unread")
+    admin_reply = message.get("admin_reply")
+    message_id = message.get("id", "?")
+    
+    # Format timestamp
+    timestamp = ""
+    if isinstance(created_at, str) and created_at:
+        try:
+            from datetime import datetime
+            dt = datetime.fromisoformat(created_at)
+            timestamp = dt.strftime("%b %d, %Y %H:%M:%S")
+        except:
+            timestamp = str(created_at)
+    
+    status_badge = "🟡 <b>UNREAD</b>" if status == "unread" else "✅ <b>REPLIED</b>" if status == "replied" else "🔵 <b>READ</b>"
+    
+    lines = [
+        f"{status_badge}",
+        "",
+        f"<b>Message ID:</b> #{message_id}",
+        f"<b>From:</b> {escape(user_name)} (ID: {user_id})",
+        f"<b>Type:</b> {message_type}",
+        f"<b>Date:</b> {timestamp}",
+        "",
+        f"<b>Message:</b>",
+        f"<code>{escape(message_text)}</code>",
+    ]
+    
+    if admin_reply:
+        lines.extend([
+            "",
+            f"<b>Your Reply:</b>",
+            f"<code>{escape(admin_reply)}</code>",
+        ])
+    else:
+        lines.append(f"\n<i>No reply sent yet.</i>")
+    
+    return "\n".join(lines)
+
+
+def format_send_reply_prompt(user_name: str) -> str:
+    """Format prompt for sending reply to customer."""
+    return (
+        f"💬 <b>Reply to {escape(user_name)}</b>\n\n"
+        f"Type your reply below:\n\n"
+        f"<i>This will be sent back to the customer.</i>"
+    )
+
+
+def format_reply_sent_success(user_name: str) -> str:
+    """Format confirmation that reply was sent."""
+    return (
+        f"{EMOJI_SUCCESS} <b>Reply Sent!</b>\n\n"
+        f"Your message has been sent to {escape(user_name)}."
+    )
+
+
+def format_unread_messages_badge(count: int) -> str:
+    """Format a badge showing unread message count."""
+    if count == 0:
+        return ""
+    return f" 🔴 {count}"
+
+
+def format_broadcast_feedback_prompt() -> str:
+    """Format prompt for users after a broadcast asking for feedback."""
+    return (
+        f"💬 <b>Share Your Thoughts</b>\n\n"
+        f"Have any feedback or questions about this announcement?\n"
+        f"Just send a message and we'll get back to you soon!"
+    )
