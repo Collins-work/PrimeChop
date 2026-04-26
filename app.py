@@ -7014,7 +7014,7 @@ def main():
     app.add_handler(CommandHandler("order_analysis", order_analysis))
     app.add_handler(CommandHandler("waiter_analysis", waiter_analysis))
     app.add_handler(CommandHandler("user_count", user_count))
-    app.add_handler(CommandHandler("user_details", user_details))
+    # app.add_handler(CommandHandler("user_details", user_details))
     app.add_handler(CommandHandler("clear_orders", clear_orders))
     app.add_handler(CommandHandler("menu", menu))
     app.add_handler(CommandHandler("pbroadcast", personalized_broadcast))
