@@ -357,8 +357,8 @@ def format_customer_support() -> str:
         f"{EMOJI_INFO} <b>Customer Support</b>\n\n"
         f"Need help with an order, payment, or delivery?\n"
         f"Contact support directly:\n"
-        f"Phone: 09116002889\n"
-        f"Telegram: @ItsClins"
+        f"Phone: PrimeChop Admin 08127812333\n"
+        f"Telegram: @PrimeChopAdmin"
     )
 
 
