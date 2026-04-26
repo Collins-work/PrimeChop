@@ -1721,6 +1721,16 @@ def admin_analytics_keyboard() -> InlineKeyboardMarkup:
     )
 
 
+def admin_waiter_analytics_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("🔄 Refresh Waiter Analysis", callback_data="admin:waiter_analytics")],
+            [InlineKeyboardButton("🗑️ Clear Waiter Records", callback_data="admin:waiter_clear_prompt")],
+            [InlineKeyboardButton("🔙 Back to Admin Home", callback_data="admin:menu")],
+        ]
+    )
+
+
 
 def admin_catalog_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
@@ -3065,6 +3075,15 @@ def format_waiter_analytics_dashboard(rows: list) -> str:
         )
 
     return "\n".join(lines)
+
+
+def format_waiter_analysis_clear_prompt(total_records: int) -> str:
+    return (
+        "🗑️ <b>Clear Waiter Records</b>\n\n"
+        f"This will permanently delete <b>{total_records}</b> waiter earning adjustment records used in the analysis.\n"
+        "This does not delete order history or waiter accounts.\n\n"
+        "Choose carefully before confirming."
+    )
 
 
 def format_waiter_order_book(available_rows: list) -> str:
@@ -4664,7 +4683,39 @@ async def admin_panel_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             query,
             text=format_waiter_analytics_dashboard(rows),
             parse_mode="HTML",
-            reply_markup=admin_panel_keyboard(),
+            reply_markup=admin_waiter_analytics_keyboard(),
+        )
+        return
+
+    if data == "admin:waiter_clear_prompt":
+        total_records = db.count_waiter_earning_adjustments()
+        await _edit_or_send_callback_message(
+            query,
+            text=format_waiter_analysis_clear_prompt(total_records),
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(
+                [
+                    [
+                        InlineKeyboardButton("🗑️ Yes, Clear Records", callback_data="admin:waiter_clear_confirm"),
+                        InlineKeyboardButton("❎ Cancel", callback_data="admin:waiter_analytics"),
+                    ]
+                ]
+            ),
+        )
+        return
+
+    if data == "admin:waiter_clear_confirm":
+        deleted_count = db.clear_waiter_earning_adjustments()
+        rows = db.waiter_performance(limit=30)
+        await _edit_or_send_callback_message(
+            query,
+            text=(
+                "✅ <b>Waiter Records Cleared</b>\n\n"
+                f"Deleted <b>{deleted_count}</b> waiter earning adjustment records.\n\n"
+                f"{format_waiter_analytics_dashboard(rows)}"
+            ),
+            parse_mode="HTML",
+            reply_markup=admin_waiter_analytics_keyboard(),
         )
         return
 
@@ -5214,7 +5265,11 @@ async def waiter_analysis(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.effective_message.reply_text("Run /admin and login first.")
         return
     rows = db.waiter_performance(limit=30)
-    await update.effective_message.reply_text(format_waiter_analytics_dashboard(rows), parse_mode="HTML")
+    await update.effective_message.reply_text(
+        format_waiter_analytics_dashboard(rows),
+        parse_mode="HTML",
+        reply_markup=admin_waiter_analytics_keyboard(),
+    )
 
 
 async def user_count(update: Update, context: ContextTypes.DEFAULT_TYPE):

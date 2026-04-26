@@ -1047,6 +1047,18 @@ class Database:
             row = cursor.fetchone()
             return int(row["id"]) if row else 0
 
+    def count_waiter_earning_adjustments(self) -> int:
+        with self.connection() as conn:
+            row = conn.execute("SELECT COUNT(*) AS total FROM waiter_earning_adjustments").fetchone()
+            return int(row["total"] or 0)
+
+    def clear_waiter_earning_adjustments(self) -> int:
+        with self.connection() as conn:
+            row = conn.execute("SELECT COUNT(*) AS total FROM waiter_earning_adjustments").fetchone()
+            deleted_count = int(row["total"] or 0)
+            conn.execute("DELETE FROM waiter_earning_adjustments")
+        return deleted_count
+
     def waiter_public_user_id_exists(self, public_user_id: str) -> bool:
         with self.connection() as conn:
             row = conn.execute(
