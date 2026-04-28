@@ -2939,6 +2939,7 @@ def admin_waiter_management_keyboard() -> InlineKeyboardMarkup:
         [
             [InlineKeyboardButton("✅ Approve Waiters", callback_data="adminwm:approve_waiters")],
             [InlineKeyboardButton("🎭 Login as Waiter", callback_data="adminwm:impersonate_waiter:0")],
+            [InlineKeyboardButton("🔍 Search Waiter Details", callback_data="adminwm:search_waiter_details")],
             [InlineKeyboardButton("❌ Deactivate Waiter", callback_data="adminwm:deactivate_waiter")],
             [InlineKeyboardButton("🚻 Set Waiter Gender", callback_data="adminwm:set_gender")],
             [InlineKeyboardButton("💵 Manual Earnings Correction", callback_data="adminwm:manual_earnings")],
@@ -4160,6 +4161,22 @@ async def admin_waiter_management_callback(update: Update, context: ContextTypes
         )
         return
 
+    if action == "search_waiter_details":
+        context.user_data["admin_search_waiter_mode"] = True
+        await context.bot.send_message(
+            chat_id=user.id,
+            text=(
+                "🔍 <b>Search Waiter Details</b>\n\n"
+                "Send waiter code or telegram ID to retrieve full details.\n\n"
+                "Examples:\n"
+                "<code>WAI938</code> (waiter code)\n"
+                "<code>123456789</code> (telegram ID)\n\n"
+                "Send CANCEL to go back."
+            ),
+            parse_mode="HTML",
+        )
+        return
+
 
 async def waiters_db(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -4380,6 +4397,89 @@ async def admin_waiter_gender_router(update: Update, context: ContextTypes.DEFAU
     )
 
 
+async def admin_search_waiter_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle search input for waiter details by code or telegram ID."""
+    if not context.user_data.get("admin_search_waiter_mode"):
+        return
+
+    user = update.effective_user
+    if not has_super_admin_access(user.id, context):
+        context.user_data.pop("admin_search_waiter_mode", None)
+        return
+
+    identifier = (update.effective_message.text or "").strip().upper()
+    
+    if identifier in {"CANCEL", "EXIT", "BACK", "STOP"}:
+        context.user_data.pop("admin_search_waiter_mode", None)
+        await update.effective_message.reply_text(
+            "🔍 Search cancelled.",
+            reply_markup=admin_waiter_management_keyboard(),
+        )
+        return
+
+    # Try to find waiter by code first, then by user ID
+    waiter = None
+    search_type = None
+    
+    # If it's all digits, try as user ID first
+    if identifier.isdigit():
+        waiter = db.get_user(int(identifier))
+        if waiter:
+            search_type = "telegram_id"
+    
+    # If not found or not digits, try as waiter code
+    if not waiter:
+        waiter = db.get_user_by_waiter_code(identifier)
+        if waiter:
+            search_type = "waiter_code"
+    
+    if not waiter:
+        await update.effective_message.reply_text(
+            "❌ Waiter not found. Please check the code or telegram ID and try again.",
+        )
+        return
+
+    # Get registration details if available
+    context.user_data.pop("admin_search_waiter_mode", None)
+    
+    waiter_id = int(waiter["user_id"])
+    waiter_code = waiter["waiter_code"] or f"UID{waiter_id}"
+    status = "🟢 Online" if waiter["waiter_online"] else "🔴 Offline"
+    verified = "✅ Verified" if waiter["waiter_verified"] else "⏳ Unverified"
+    gender = (waiter["waiter_gender"] or "unspecified").strip().lower()
+    
+    # Get registration details for contact info
+    registration_details = ""
+    try:
+        latest_request = db.get_latest_waiter_request(waiter_id)
+        if latest_request:
+            registration_details = (latest_request["details"] or "").strip()
+    except:
+        pass
+    
+    # Format the response with full details
+    lines = [
+        "👨‍🍳 <b>Waiter Full Details</b>\n",
+        f"<b>Name:</b> {waiter['full_name']}",
+        f"<b>Telegram ID:</b> <code>{waiter_id}</code>",
+        f"<b>Waiter Code:</b> <code>{waiter_code}</code>",
+        f"<b>Gender:</b> {gender.title()}",
+        f"<b>Status:</b> {status} | {verified}",
+        f"<b>Role:</b> {waiter['role'] or 'customer'}",
+        f"<b>Created:</b> {waiter['created_at'] or 'N/A'}",
+        f"<b>Updated:</b> {waiter['updated_at'] or 'N/A'}",
+    ]
+    
+    if registration_details:
+        lines.append(f"\n<b>Registration Details:</b>\n<code>{registration_details}</code>")
+    
+    response_text = "\n".join(lines)
+    
+    await update.effective_message.reply_text(
+        response_text,
+        parse_mode="HTML",
+        reply_markup=admin_waiter_management_keyboard(),
+    )
 
 
 async def admin_catalog_search_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -4589,6 +4689,9 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     if context.user_data.get("admin_waiter_gender_mode"):
         await admin_waiter_gender_router(update, context)
+        return
+    if context.user_data.get("admin_search_waiter_mode"):
+        await admin_search_waiter_router(update, context)
         return
     if context.user_data.get("admin_reply_mode"):
         await handle_admin_reply(update, context)
