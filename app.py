@@ -599,6 +599,8 @@ async def _set_admin_bot_commands(application: Application, chat_id: int) -> Non
             BotCommand("pbroadcast", "Send personalized announcement"),
             BotCommand("close_waiter_registration", "Close new waiter registration"),
             BotCommand("open_waiter_registration", "Open new waiter registration"),
+            BotCommand("close_bot", "Close bot for maintenance"),
+            BotCommand("open_bot", "Reopen bot for customers"),
             BotCommand("waiter_online", "Set waiter online"),
             BotCommand("waiter_offline", "Set waiter offline"),
             BotCommand("waiter_logout", "Exit waiter mode to customer menu"),
@@ -1962,6 +1964,7 @@ def admin_quick_actions_keyboard() -> InlineKeyboardMarkup:
             [InlineKeyboardButton("📦 Track Active Orders", callback_data="admin:order_tracker")],
             [InlineKeyboardButton("🗑️ Clear Order History", callback_data="admin:clear_orders_prompt")],
             [InlineKeyboardButton("📊 Open Analytics", callback_data="admin:order_analytics")],
+            [InlineKeyboardButton("⚙️ Maintenance Mode", callback_data="admin:maintenance_menu")],
             [InlineKeyboardButton("🔙 Back to Admin Home", callback_data="admin:menu")],
         ]
     )
@@ -1976,6 +1979,23 @@ def admin_clear_orders_confirm_keyboard() -> InlineKeyboardMarkup:
             ]
         ]
     )
+
+
+def admin_maintenance_keyboard(bot_open: bool) -> InlineKeyboardMarkup:
+    if bot_open:
+        return InlineKeyboardMarkup(
+            [
+                [InlineKeyboardButton("🔒 Close Bot for Maintenance", callback_data="admin:maintenance_close")],
+                [InlineKeyboardButton("🔙 Back to Quick Actions", callback_data="admin:menu_quick")],
+            ]
+        )
+    else:
+        return InlineKeyboardMarkup(
+            [
+                [InlineKeyboardButton("🟢 Open Bot for Customers", callback_data="admin:maintenance_open")],
+                [InlineKeyboardButton("🔙 Back to Quick Actions", callback_data="admin:menu_quick")],
+            ]
+        )
 
 
 def mock_payment_actions_keyboard(
@@ -2442,6 +2462,14 @@ def _customer_email_prompt_text() -> str:
         "📧 <b>One quick step before checkout</b>\n\n"
         "Please send your real email address.\n"
         "We will save it and reuse it for future orders so you do not need to enter it again."
+    )
+
+
+def _bot_maintenance_message() -> str:
+    return (
+        "🔧 <b>The bot is under maintenance</b>\n\n"
+        "We are currently performing scheduled maintenance to improve your experience.\n"
+        "Please try again later. Thank you for your patience!"
     )
 
 
@@ -3453,6 +3481,15 @@ async def _edit_or_send_callback_message(
 async def start_place_order_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    
+    if not db.is_bot_open():
+        await _edit_or_send_callback_message(
+            query,
+            _bot_maintenance_message(),
+            parse_mode="HTML",
+        )
+        return
+    
     customer = query.from_user
     db.upsert_user(customer.id, customer.full_name, role=user_role(customer.id))
     if _needs_customer_checkout_email(customer.id):
@@ -3617,6 +3654,13 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def place_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not db.is_bot_open():
+        await update.effective_message.reply_text(
+            _bot_maintenance_message(),
+            parse_mode="HTML",
+        )
+        return
+    
     customer = update.effective_user
     db.upsert_user(customer.id, customer.full_name, role=user_role(customer.id))
     if _needs_customer_checkout_email(customer.id):
@@ -5261,6 +5305,44 @@ async def admin_panel_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         )
         return
 
+    if data == "admin:maintenance_menu":
+        bot_open = db.is_bot_open()
+        status_text = "🟢 Currently OPEN - Customers can place orders" if bot_open else "🔒 Currently CLOSED - Maintenance mode active"
+        await _edit_or_send_callback_message(
+            query,
+            text=f"⚙️ <b>Maintenance Mode Control</b>\n\n{status_text}",
+            parse_mode="HTML",
+            reply_markup=admin_maintenance_keyboard(bot_open),
+        )
+        return
+
+    if data == "admin:maintenance_close":
+        db.set_bot_open(False)
+        await _edit_or_send_callback_message(
+            query,
+            text=(
+                "🔒 <b>Bot Closed for Maintenance</b>\n\n"
+                "Customers will see a maintenance message and cannot place orders.\n"
+                "Use the maintenance menu to reopen the bot."
+            ),
+            parse_mode="HTML",
+            reply_markup=admin_maintenance_keyboard(bot_open=False),
+        )
+        return
+
+    if data == "admin:maintenance_open":
+        db.set_bot_open(True)
+        await _edit_or_send_callback_message(
+            query,
+            text=(
+                "🟢 <b>Bot Reopened</b>\n\n"
+                "Customers can now place orders normally."
+            ),
+            parse_mode="HTML",
+            reply_markup=admin_maintenance_keyboard(bot_open=True),
+        )
+        return
+
     if data == "admin:clear_orders_prompt":
         if not settings.allow_order_history_purge:
             await _edit_or_send_callback_message(
@@ -5750,6 +5832,47 @@ async def open_waiter_registration(update: Update, context: ContextTypes.DEFAULT
     )
 
 
+async def close_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if not is_admin(user.id) and not has_super_admin_access(user.id, context):
+        await update.effective_message.reply_text(format_unauthorized(), parse_mode="HTML")
+        return
+
+    if not db.is_bot_open():
+        await update.effective_message.reply_text(
+            "ℹ️ The bot is already closed for maintenance."
+        )
+        return
+
+    db.set_bot_open(False)
+    await update.effective_message.reply_text(
+        "🔒 <b>Bot is now CLOSED</b>\n\n"
+        "Customers will see a maintenance message and cannot place orders.\n"
+        "Use /open_bot to reopen the bot.",
+        parse_mode="HTML",
+    )
+
+
+async def open_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if not is_admin(user.id) and not has_super_admin_access(user.id, context):
+        await update.effective_message.reply_text(format_unauthorized(), parse_mode="HTML")
+        return
+
+    if db.is_bot_open():
+        await update.effective_message.reply_text(
+            "ℹ️ The bot is already open."
+        )
+        return
+
+    db.set_bot_open(True)
+    await update.effective_message.reply_text(
+        "🟢 <b>Bot is now OPEN</b>\n\n"
+        "Customers can place orders normally.",
+        parse_mode="HTML",
+    )
+
+
 async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if not is_admin(user.id) and not has_super_admin_access(user.id, context):
@@ -6202,6 +6325,13 @@ async def handle_admin_reply(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not db.is_bot_open():
+        await update.effective_message.reply_text(
+            _bot_maintenance_message(),
+            parse_mode="HTML",
+        )
+        return
+    
     vendors = _hydrate_catalog_session(context)
     if not vendors:
         await update.effective_message.reply_text(format_menu_empty(), parse_mode="HTML")
@@ -7336,6 +7466,8 @@ def main():
     app.add_handler(CommandHandler("confirm_topup", confirm_topup))
     app.add_handler(CommandHandler("close_waiter_registration", close_waiter_registration))
     app.add_handler(CommandHandler("open_waiter_registration", open_waiter_registration))
+    app.add_handler(CommandHandler("close_bot", close_bot))
+    app.add_handler(CommandHandler("open_bot", open_bot))
     app.add_handler(CommandHandler("broadcast", broadcast))
     app.add_handler(CommandHandler("view_messages", view_customer_messages))
     app.add_handler(CommandHandler("view_message", view_single_message))

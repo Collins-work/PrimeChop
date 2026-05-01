@@ -963,6 +963,29 @@ class Database:
                 ("1" if is_open else "0", now),
             )
 
+    def is_bot_open(self) -> bool:
+        with self.connection() as conn:
+            row = conn.execute(
+                "SELECT value FROM bot_flags WHERE key='bot_open' LIMIT 1"
+            ).fetchone()
+            if not row:
+                return True
+            return str(row["value"] or "").strip().lower() in {"1", "true", "yes", "on"}
+
+    def set_bot_open(self, is_open: bool):
+        now = self.now_iso()
+        with self.connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO bot_flags (key, value, updated_at)
+                VALUES ('bot_open', ?, ?)
+                ON CONFLICT(key) DO UPDATE SET
+                    value=excluded.value,
+                    updated_at=excluded.updated_at
+                """,
+                ("1" if is_open else "0", now),
+            )
+
     def assign_waiter_invite(self, user_id: int, full_name: str, waiter_code: str, waiter_gender: str | None = None):
         now = self.now_iso()
         normalized_gender = (waiter_gender or "").strip().lower()
