@@ -4,6 +4,7 @@
 CREATE TABLE IF NOT EXISTS users (
     user_id BIGINT PRIMARY KEY,
     full_name TEXT,
+    customer_email TEXT,
     role TEXT NOT NULL DEFAULT 'customer',
     wallet_balance BIGINT NOT NULL DEFAULT 0,
     waiter_online INTEGER NOT NULL DEFAULT 0,

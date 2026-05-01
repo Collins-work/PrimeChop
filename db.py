@@ -612,6 +612,7 @@ class Database:
                 CREATE TABLE IF NOT EXISTS users (
                     user_id BIGINT PRIMARY KEY,
                     full_name TEXT,
+                    customer_email TEXT,
                     role TEXT DEFAULT 'customer',
                     wallet_balance INTEGER DEFAULT 0,
                     waiter_online INTEGER DEFAULT 0,
@@ -623,6 +624,7 @@ class Database:
                 )
                 """
             )
+            conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS customer_email TEXT")
             conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS waiter_gender TEXT")
             
             conn.execute(
@@ -890,6 +892,35 @@ class Database:
                 (user_id, full_name, role, now, now),
             )
             self._refresh_waiter_registry_export()
+
+    def get_customer_email(self, user_id: int) -> str:
+        with self.connection() as conn:
+            row = conn.execute(
+                "SELECT customer_email FROM users WHERE user_id=?",
+                (user_id,),
+            ).fetchone()
+        if not row:
+            return ""
+        return str(row.get("customer_email") or "").strip().lower()
+
+    def set_customer_email(self, user_id: int, email: str) -> bool:
+        normalized_email = str(email or "").strip().lower()
+        if not normalized_email:
+            return False
+
+        now = self.now_iso()
+        with self.connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO users (user_id, full_name, customer_email, role, created_at, updated_at)
+                VALUES (?, '', ?, 'customer', ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    customer_email=excluded.customer_email,
+                    updated_at=excluded.updated_at
+                """,
+                (user_id, normalized_email, now, now),
+            )
+        return True
 
     def set_role(self, user_id: int, role: str):
         now = self.now_iso()

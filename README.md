@@ -32,6 +32,7 @@ Then edit `.env`.
 - `CAFETERIA_NAME=Cafeteria 1`
 - `ORDER_VENDORS` = comma-separated vendor names shown during ordering
 - `DELIVERY_HALLS` = comma-separated hall names shown during checkout
+- `ORDER_LOG_GROUP_CHAT_ID` = Telegram private group chat ID (for mirroring all order lifecycle updates)
 - `SUPER_ADMIN_SECRET` = strong admin password stored only in `.env` if you want to use the super-admin panel
 
 Paystack:

@@ -65,6 +65,16 @@ def _parse_bool(raw: str, default: bool = False) -> bool:
     return value in {"1", "true", "yes", "on"}
 
 
+def _parse_int(raw: str, default: int = 0) -> int:
+    value = (raw or "").strip()
+    if not value:
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        return default
+
+
 def _strip_wrapping_quotes(raw: str) -> str:
     value = (raw or "").strip()
     if len(value) >= 2 and value[0] == value[-1] and value[0] in {"\"", "'"}:
@@ -214,6 +224,7 @@ class Settings:
     admin_ids: Set[int]
     admin_phone_numbers: Set[str]
     waiter_ids: Set[int]
+    order_log_group_chat_id: int
     bot_timezone: str
     cafeteria_name: str
     order_vendors: list[str]
@@ -269,6 +280,7 @@ settings = Settings(
     admin_ids=_parse_ids(os.getenv("ADMIN_IDS", "")),
     admin_phone_numbers=_parse_set(os.getenv("ADMIN_PHONE_NUMBERS", "")),
     waiter_ids=_parse_ids(os.getenv("WAITER_IDS", "")),
+    order_log_group_chat_id=_parse_int(os.getenv("ORDER_LOG_GROUP_CHAT_ID", "0"), default=0),
     bot_timezone=os.getenv("BOT_TIMEZONE", "Africa/Lagos").strip(),
     cafeteria_name=os.getenv("CAFETERIA_NAME", "Cafeteria 1").strip(),
     order_vendors=_parse_csv_list(os.getenv("ORDER_VENDORS", "")) or DEFAULT_ORDER_VENDORS,

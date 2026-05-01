@@ -245,6 +245,8 @@ WAITER_EMAIL_PLACEHOLDERS = {
     "user@example.com",
 }
 
+CUSTOMER_EMAIL_PATTERN = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+
 PRIME_RIDDLES = [
     {
         "prompt": "I speak without a mouth and hear without ears. What am I?",
@@ -1043,6 +1045,64 @@ def _audit_order_event(order_row, event: str, payment_status: str):
         logger.exception("Failed to write order audit event")
 
 
+def _format_order_event_log_message(order_row, event: str, payment_status: str) -> str:
+    order_ref = str(order_row["order_ref"] or order_row["id"])
+    status = str(order_row.get("status") or "").strip() or "unknown"
+    provider = str(order_row.get("payment_provider") or "").strip() or "n/a"
+    customer_id = int(order_row["customer_id"] or 0)
+    waiter_id = int(order_row["waiter_id"] or 0)
+
+    customer = db.get_user(customer_id) if customer_id else None
+    waiter = db.get_user(waiter_id) if waiter_id else None
+    item = db.get_menu_item(order_row["item_id"]) if int(order_row["item_id"] or 0) > 0 else None
+
+    customer_name = html.escape(str(customer["full_name"] if customer else "Unknown customer"), quote=False)
+    waiter_name = html.escape(str(waiter["full_name"] if waiter else "Unassigned"), quote=False)
+    item_name = html.escape(str(item["name"] if item else (order_row["order_details"] or f"Item #{order_row['item_id']}")), quote=False)
+    vendor_name = html.escape(str(order_row["cafeteria_name"] or settings.cafeteria_name), quote=False)
+    hall_name = html.escape(str(order_row.get("hall_name") or "N/A"), quote=False)
+    room_number = html.escape(str(order_row.get("room_number") or "N/A"), quote=False)
+    delivery_time = html.escape(str(order_row.get("delivery_time") or "N/A"), quote=False)
+    event_label = html.escape(event.replace("_", " ").title(), quote=False)
+
+    return (
+        "📦 <b>Order Tracker Mirror</b>\n"
+        f"<b>Event:</b> {event_label}\n"
+        f"<b>Order Ref:</b> {html.escape(order_ref)}\n"
+        f"<b>Status:</b> {html.escape(status)}\n"
+        f"<b>Payment:</b> {html.escape(payment_status)} ({html.escape(provider)})\n"
+        f"<b>Amount:</b> ₦{int(order_row['amount'] or 0):,}\n"
+        f"<b>Customer:</b> {customer_name} ({customer_id})\n"
+        f"<b>Waiter:</b> {waiter_name}"
+        + (f" ({waiter_id})" if waiter_id else "")
+        + "\n"
+        f"<b>Vendor:</b> {vendor_name}\n"
+        f"<b>Item:</b> {item_name}\n"
+        f"<b>Location:</b> {hall_name}, Room {room_number}\n"
+        f"<b>Delivery Time:</b> {delivery_time}\n"
+        f"<b>Updated:</b> {html.escape(str(order_row.get('updated_at') or order_row.get('created_at') or db.now_iso()))}"
+    )
+
+
+async def _mirror_order_event_to_group(order_row, event: str, payment_status: str, bot: Bot):
+    group_chat_id = int(settings.order_log_group_chat_id or 0)
+    if not order_row or not group_chat_id:
+        return
+    try:
+        await bot.send_message(
+            chat_id=group_chat_id,
+            text=_format_order_event_log_message(order_row, event=event, payment_status=payment_status),
+            parse_mode="HTML",
+        )
+    except Exception:
+        logger.exception(
+            "Failed to mirror order event '%s' for order %s to group %s",
+            event,
+            order_row.get("order_ref") or order_row.get("id"),
+            group_chat_id,
+        )
+
+
 def _audit_waiter_upsert_by_user_id(user_id: int):
     row = db.get_user(user_id)
     if not row:
@@ -1185,6 +1245,7 @@ async def paystack_wallet_callback(request: web.Request) -> web.Response:
         _audit_order_event(order, event="payment_confirmed", payment_status="confirmed")
         try:
             callback_bot = Bot(token=settings.telegram_bot_token)
+            await _mirror_order_event_to_group(order, event="payment_confirmed", payment_status="confirmed", bot=callback_bot)
             await _dispatch_paid_order_via_bot(order, callback_bot)
         except Exception:
             logger.exception("Failed to dispatch paid order from callback for %s", reference)
@@ -2351,8 +2412,78 @@ def _cart_vendor_name(item) -> str:
     return vendor["name"] if vendor else settings.cafeteria_name
 
 
+def _parse_customer_checkout_email(raw_email: str) -> tuple[Optional[str], Optional[str]]:
+    email = (raw_email or "").strip().lower()
+    if not email:
+        return None, "Please send your email address to continue checkout."
+    if not CUSTOMER_EMAIL_PATTERN.fullmatch(email):
+        return None, "Please enter a valid email address."
+    if email in WAITER_EMAIL_PLACEHOLDERS or email.endswith("@example.com"):
+        return None, "Please use a real email address, not a placeholder email."
+    return email, None
+
+
+def _get_customer_checkout_email(user_id: int) -> str:
+    email = db.get_customer_email(user_id)
+    if not email:
+        return ""
+    normalized, error = _parse_customer_checkout_email(email)
+    if error:
+        return ""
+    return normalized or ""
+
+
+def _needs_customer_checkout_email(user_id: int) -> bool:
+    return not bool(_get_customer_checkout_email(user_id))
+
+
+def _customer_email_prompt_text() -> str:
+    return (
+        "📧 <b>One quick step before checkout</b>\n\n"
+        "Please send your real email address.\n"
+        "We will save it and reuse it for future orders so you do not need to enter it again."
+    )
+
+
+async def customer_checkout_email_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    message = update.effective_message
+    if not message:
+        return
+
+    db.upsert_user(user.id, user.full_name, role=user_role(user.id))
+    email, error = _parse_customer_checkout_email(message.text or "")
+    if error:
+        await message.reply_text(error, parse_mode="HTML")
+        await message.reply_text(_customer_email_prompt_text(), parse_mode="HTML")
+        return
+
+    db.set_customer_email(user.id, email)
+    resume = context.user_data.pop("awaiting_customer_email", {})
+
+    await message.reply_text(
+        f"✅ Email saved: <b>{html.escape(email)}</b>",
+        parse_mode="HTML",
+    )
+
+    next_action = (resume or {}).get("next_action")
+    if next_action == "resume_cart_checkout":
+        cart_draft = _build_cart_checkout_draft(context)
+        if not cart_draft:
+            await message.reply_text("Your cart is empty.", parse_mode="HTML")
+            return
+        context.user_data["order_draft"] = cart_draft
+        await _send_hall_selection(update, context, from_cart=True)
+        return
+
+    await menu(update, context)
+
+
 def _checkout_customer_email(user) -> str:
-    # Paystack rejects local-only email domains like .local in live mode.
+    # Prefer saved customer email; keep fallback to avoid breaking payments for legacy users.
+    saved_email = _get_customer_checkout_email(user.id)
+    if saved_email:
+        return saved_email
     return f"user{user.id}@primechop.app"
 
 
@@ -2575,6 +2706,7 @@ async def checkout_payment_callback(update: Update, context: ContextTypes.DEFAUL
 
         order = db.get_order(order_id)
         _audit_order_event(order, event="order_created", payment_status="confirmed")
+        await _mirror_order_event_to_group(order, event="order_created", payment_status="confirmed", bot=context.bot)
         context.user_data.pop("pending_checkout", None)
         if pending.get("from_cart"):
             context.user_data.pop("cart", None)
@@ -2634,6 +2766,8 @@ async def checkout_payment_callback(update: Update, context: ContextTypes.DEFAUL
                 platform_share=platform_share,
             )
             _audit_order_event(db.get_order(order_id), event="order_created", payment_status="pending")
+            pending_order = db.get_order(order_id)
+            await _mirror_order_event_to_group(pending_order, event="order_created", payment_status="pending", bot=context.bot)
         except Exception as exc:
             logger.exception("Paystack checkout failed while creating pending order")
             await _edit_or_send_callback_message(
@@ -2775,6 +2909,7 @@ async def confirm_order_payment(update: Update, context: ContextTypes.DEFAULT_TY
 
     if order:
         _audit_order_event(order, event="payment_confirmed", payment_status="confirmed")
+        await _mirror_order_event_to_group(order, event="payment_confirmed", payment_status="confirmed", bot=context.bot)
         await update.effective_message.reply_text(
             f"✅ Order payment confirmed for {order['order_ref'] or order['id']}.",
         )
@@ -2860,6 +2995,7 @@ async def mock_payment_confirm_callback(update: Update, context: ContextTypes.DE
             return
 
         _audit_order_event(order, event="payment_confirmed", payment_status="confirmed")
+        await _mirror_order_event_to_group(order, event="payment_confirmed", payment_status="confirmed", bot=context.bot)
         await _edit_or_send_callback_message(
             query,
             f"✅ Order payment confirmed for {order['order_ref'] or order['id']}.",
@@ -3317,6 +3453,17 @@ async def _edit_or_send_callback_message(
 async def start_place_order_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    customer = query.from_user
+    db.upsert_user(customer.id, customer.full_name, role=user_role(customer.id))
+    if _needs_customer_checkout_email(customer.id):
+        context.user_data["awaiting_customer_email"] = {"next_action": "open_vendor_menu"}
+        await _edit_or_send_callback_message(
+            query,
+            _customer_email_prompt_text(),
+            parse_mode="HTML",
+        )
+        return
+
     vendors = _hydrate_catalog_session(context)
     if not vendors:
         await _edit_or_send_callback_message(query, format_menu_empty(), parse_mode="HTML")
@@ -3470,6 +3617,16 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def place_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    customer = update.effective_user
+    db.upsert_user(customer.id, customer.full_name, role=user_role(customer.id))
+    if _needs_customer_checkout_email(customer.id):
+        context.user_data["awaiting_customer_email"] = {"next_action": "open_vendor_menu"}
+        await update.effective_message.reply_text(
+            _customer_email_prompt_text(),
+            parse_mode="HTML",
+        )
+        return
+
     await menu(update, context)
 
 
@@ -3528,6 +3685,16 @@ async def cart_action_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         if not cart_draft:
             await query.answer("Your cart is empty.", show_alert=True)
             return
+
+        if _needs_customer_checkout_email(query.from_user.id):
+            context.user_data["awaiting_customer_email"] = {"next_action": "resume_cart_checkout"}
+            await _edit_or_send_callback_message(
+                query,
+                _customer_email_prompt_text(),
+                parse_mode="HTML",
+            )
+            return
+
         context.user_data["order_draft"] = cart_draft
         await _send_hall_selection(update, context, from_cart=True)
         return
@@ -4674,6 +4841,9 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     if context.user_data.get("admin_catalog_search_mode"):
         await admin_catalog_search_router(update, context)
+        return
+    if context.user_data.get("awaiting_customer_email"):
+        await customer_checkout_email_step(update, context)
         return
     if context.user_data.get("topup_mode") == "await_amount":
         await topup_amount_step(update, context)
@@ -6447,6 +6617,7 @@ async def claim_order_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     order = db.get_order(order_id)
     if order:
         _audit_order_event(order, event="order_claimed", payment_status="confirmed")
+        await _mirror_order_event_to_group(order, event="order_claimed", payment_status="confirmed", bot=context.bot)
         item = db.get_menu_item(order["item_id"])
         item_name = item["name"] if item else f"Item #{order_id}"
         vendor = db.get_vendor(int(item["vendor_id"])) if item and item["vendor_id"] else None
@@ -6524,6 +6695,7 @@ async def waiter_complete_callback(update: Update, context: ContextTypes.DEFAULT
         return
 
     _audit_order_event(order, event="order_completed", payment_status="confirmed")
+    await _mirror_order_event_to_group(order, event="order_completed", payment_status="confirmed", bot=context.bot)
 
     waiter_text = format_order_completed_waiter(order_id, order["waiter_share"], order["platform_share"])
     await query.edit_message_text(waiter_text, parse_mode="HTML")
@@ -6557,6 +6729,7 @@ async def waiter_abandon_callback(update: Update, context: ContextTypes.DEFAULT_
     order = db.get_order(order_id)
     if order:
         _audit_order_event(order, event="order_abandoned", payment_status="confirmed")
+        await _mirror_order_event_to_group(order, event="order_abandoned", payment_status="confirmed", bot=context.bot)
         try:
             await context.bot.send_message(
                 chat_id=order["customer_id"],
@@ -6850,6 +7023,7 @@ async def complete(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     _audit_order_event(order, event="order_completed", payment_status="confirmed")
+    await _mirror_order_event_to_group(order, event="order_completed", payment_status="confirmed", bot=context.bot)
 
     text = format_order_completed_waiter(order_id, order["waiter_share"], order["platform_share"])
     await update.effective_message.reply_text(text, parse_mode="HTML")
