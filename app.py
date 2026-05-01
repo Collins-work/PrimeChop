@@ -3039,6 +3039,10 @@ async def order_catalog_navigation_callback(update: Update, context: ContextType
     query = update.callback_query
     await query.answer()
 
+    if not db.is_bot_open():
+        await query.answer("The bot is under maintenance. Please try again later.", show_alert=True)
+        return
+
     action = query.data.split(":", 1)[1]
     if action == "back_vendors":
         context.user_data.pop("order_draft", None)
@@ -3696,6 +3700,10 @@ async def cart_action_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     query = update.callback_query
     await query.answer()
 
+    if not db.is_bot_open():
+        await query.answer("The bot is under maintenance. Please try again later.", show_alert=True)
+        return
+
     action = query.data.split(":", 1)[1]
     if action == "vendors":
         vendors = _hydrate_catalog_session(context)
@@ -3796,6 +3804,10 @@ async def cart_hall_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def cart_adjust_quantity_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+
+    if not db.is_bot_open():
+        await query.answer("The bot is under maintenance. Please try again later.", show_alert=True)
+        return
 
     parts = query.data.split(":")
     if len(parts) != 3:
@@ -4874,6 +4886,14 @@ async def admin_catalog_edit_router(update: Update, context: ContextTypes.DEFAUL
 
 
 async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if not db.is_bot_open() and not (is_admin(user.id) or has_super_admin_access(user.id, context)):
+        await update.effective_message.reply_text(
+            _bot_maintenance_message(),
+            parse_mode="HTML",
+        )
+        return
+    
     if context.user_data.get("admin_phone_verify_mode"):
         await admin_phone_verify_router(update, context)
         return
@@ -4956,6 +4976,11 @@ async def admin_panel_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         else:
             await query.answer("Run /admin first and login.", show_alert=True)
             return
+    
+    if not db.is_bot_open() and not (is_admin(user.id) or has_super_admin_access(user.id, context)):
+        await query.answer("The bot is under maintenance. Please try again later.", show_alert=True)
+        return
+    
     if data == "admin:menu":
         await _edit_or_send_callback_message(
             query,
@@ -6348,6 +6373,10 @@ async def order_vendor_callback(update: Update, context: ContextTypes.DEFAULT_TY
     query = update.callback_query
     await query.answer()
 
+    if not db.is_bot_open():
+        await query.answer("The bot is under maintenance. Please try again later.", show_alert=True)
+        return ConversationHandler.END
+
     customer = query.from_user
     db.upsert_user(customer.id, customer.full_name, role=user_role(customer.id))
 
@@ -6428,6 +6457,10 @@ async def catalog_item_quantity_callback(update: Update, context: ContextTypes.D
     query = update.callback_query
     await query.answer()
 
+    if not db.is_bot_open():
+        await query.answer("The bot is under maintenance. Please try again later.", show_alert=True)
+        return
+
     selection = _get_item_selection(context)
     if not selection:
         await query.answer("Select an item first.", show_alert=True)
@@ -6455,6 +6488,10 @@ async def catalog_item_quantity_callback(update: Update, context: ContextTypes.D
 async def catalog_add_current_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+
+    if not db.is_bot_open():
+        await query.answer("The bot is under maintenance. Please try again later.", show_alert=True)
+        return
 
     selection = _get_item_selection(context)
     if not selection:
@@ -6588,6 +6625,10 @@ async def order_hall_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     query = update.callback_query
     await query.answer()
 
+    if not db.is_bot_open():
+        await query.answer("The bot is under maintenance. Please try again later.", show_alert=True)
+        return ConversationHandler.END
+
     draft = _ensure_order_draft(context)
     hall_index = int(query.data.split(":")[2])
     if hall_index < 0 or hall_index >= len(settings.delivery_halls):
@@ -6649,6 +6690,10 @@ async def order_time_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle delivery time selection."""
     query = update.callback_query
     await query.answer()
+
+    if not db.is_bot_open():
+        await query.answer("The bot is under maintenance. Please try again later.", show_alert=True)
+        return ConversationHandler.END
 
     draft = context.user_data.get("order_draft", {})
     if not draft:
