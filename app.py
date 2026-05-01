@@ -872,6 +872,9 @@ async def _prime_exit(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def prime_assistant(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if await _block_when_bot_closed(update, context):
+        return
+
     user = update.effective_user
     role = user_role(user.id)
     db.upsert_user(user.id, user.full_name, role=role)
@@ -2473,6 +2476,17 @@ def _bot_maintenance_message() -> str:
     )
 
 
+async def _block_when_bot_closed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    user = update.effective_user
+    if db.is_bot_open() or is_admin(user.id) or has_super_admin_access(user.id, context):
+        return False
+
+    message = update.effective_message
+    if message:
+        await message.reply_text(_bot_maintenance_message(), parse_mode="HTML")
+    return True
+
+
 async def customer_checkout_email_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     message = update.effective_message
@@ -2504,15 +2518,22 @@ async def customer_checkout_email_step(update: Update, context: ContextTypes.DEF
         await _send_hall_selection(update, context, from_cart=True)
         return
 
+    if next_action == "resume_topup":
+        amount = int(resume.get("amount") or 0)
+        if amount > 0:
+            await initialize_topup_for_user(
+                user=user,
+                chat_id=message.chat_id,
+                amount=amount,
+                context=context,
+            )
+            return
+
     await menu(update, context)
 
 
 def _checkout_customer_email(user) -> str:
-    # Prefer saved customer email; keep fallback to avoid breaking payments for legacy users.
-    saved_email = _get_customer_checkout_email(user.id)
-    if saved_email:
-        return saved_email
-    return f"user{user.id}@primechop.app"
+    return _get_customer_checkout_email(user.id)
 
 
 async def _send_vendor_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3589,7 +3610,16 @@ async def initialize_topup_for_user(
     amount: int,
     context: ContextTypes.DEFAULT_TYPE,
 ):
-    email = _checkout_customer_email(user)
+    email = _get_customer_checkout_email(user.id)
+    if not email:
+        context.user_data["awaiting_customer_email"] = {"next_action": "resume_topup", "amount": amount}
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=_customer_email_prompt_text(),
+            parse_mode="HTML",
+        )
+        return
+
     try:
         result = await payments.initialize_wallet_topup(
             amount=amount,
@@ -3636,6 +3666,9 @@ async def initialize_topup_for_user(
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if await _block_when_bot_closed(update, context):
+        return
+
     user = update.effective_user
     role = user_role(user.id)
     db.upsert_user(user.id, user.full_name, role=role)
@@ -3652,17 +3685,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if await _block_when_bot_closed(update, context):
+        return
+
     role = user_role(update.effective_user.id)
     text = format_help_message()
     await update.effective_message.reply_text(text, reply_markup=home_keyboard(role), parse_mode="HTML")
 
 
 async def place_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not db.is_bot_open():
-        await update.effective_message.reply_text(
-            _bot_maintenance_message(),
-            parse_mode="HTML",
-        )
+    if await _block_when_bot_closed(update, context):
         return
     
     customer = update.effective_user
@@ -3679,6 +3711,9 @@ async def place_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def view_cart(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if await _block_when_bot_closed(update, context):
+        return
+
     lines, total, _ = _cart_lines_and_total(context)
     if not lines:
         await update.effective_message.reply_text(format_empty_cart(), parse_mode="HTML", reply_markup=cart_actions_keyboard())
@@ -3858,6 +3893,9 @@ async def cart_adjust_quantity_callback(update: Update, context: ContextTypes.DE
 
 
 async def become_waiter(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if await _block_when_bot_closed(update, context):
+        return
+
     user = update.effective_user
     if is_waiter(user.id):
         await update.effective_message.reply_text(
@@ -5562,10 +5600,16 @@ async def admin_invite_router(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 
 async def customer_support(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if await _block_when_bot_closed(update, context):
+        return
+
     await update.effective_message.reply_text(format_customer_support(), parse_mode="HTML")
 
 
 async def view_orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if await _block_when_bot_closed(update, context):
+        return
+
     user = update.effective_user
     waiter_user_id = _effective_waiter_user_id(user.id, context)
     if waiter_user_id is None:
@@ -5684,6 +5728,9 @@ async def order_progress(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def order_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if await _block_when_bot_closed(update, context):
+        return
+
     user = update.effective_user
     rows = db.list_customer_orders(user.id, limit=10)
     if not rows:
@@ -5710,6 +5757,9 @@ async def clear_orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def terms(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if await _block_when_bot_closed(update, context):
+        return
+
     await update.effective_message.reply_text(format_terms_and_conditions(), parse_mode="HTML")
 
 
@@ -5735,6 +5785,9 @@ async def clear_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def wallet(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if await _block_when_bot_closed(update, context):
+        return
+
     user = update.effective_user
     role = user_role(user.id)
     db.upsert_user(user.id, user.full_name, role=role)
@@ -5747,6 +5800,9 @@ async def wallet(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def topup(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if await _block_when_bot_closed(update, context):
+        return
+
     user = update.effective_user
     db.upsert_user(user.id, user.full_name, role=user_role(user.id))
 
