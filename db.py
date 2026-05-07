@@ -1106,12 +1106,36 @@ class Database:
             row = conn.execute("SELECT COUNT(*) AS total FROM waiter_earning_adjustments").fetchone()
             return int(row["total"] or 0)
 
-    def clear_waiter_earning_adjustments(self) -> int:
+    def clear_waiter_earning_adjustments(self) -> tuple[int, int]:
+        """
+        Clear all waiter earnings adjustments and reset completed orders to pending.
+        Returns: (adjustment_records_deleted, completed_orders_reset)
+        """
+        now = self.now_iso()
         with self.connection() as conn:
+            # Count adjustment records to delete
             row = conn.execute("SELECT COUNT(*) AS total FROM waiter_earning_adjustments").fetchone()
             deleted_count = int(row["total"] or 0)
+            
+            # Count completed orders to reset
+            row = conn.execute("SELECT COUNT(*) AS total FROM orders WHERE status='completed'").fetchone()
+            reset_count = int(row["total"] or 0)
+            
+            # Delete all adjustment records
             conn.execute("DELETE FROM waiter_earning_adjustments")
-        return deleted_count
+            
+            # Reset all completed orders back to pending_waiter (so they don't count as earnings)
+            conn.execute(
+                """
+                UPDATE orders
+                SET status='pending_waiter', waiter_id=NULL, completed_at=NULL, updated_at=?
+                WHERE status='completed'
+                """,
+                (now,)
+            )
+        
+        self._refresh_orders_users_export()
+        return deleted_count, reset_count
 
     def waiter_public_user_id_exists(self, public_user_id: str) -> bool:
         with self.connection() as conn:

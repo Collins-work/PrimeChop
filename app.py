@@ -3270,7 +3270,10 @@ def format_waiter_analytics_dashboard(rows: list) -> str:
 def format_waiter_analysis_clear_prompt(total_records: int) -> str:
     return (
         "🗑️ <b>Clear Waiter Records</b>\n\n"
-        f"This will permanently delete <b>{total_records}</b> waiter earning adjustment records used in the analysis.\n"
+        f"This will permanently:\n"
+        f"• Delete all <b>{total_records}</b> manual adjustment records\n"
+        f"• Reset all completed orders back to pending status\n"
+        f"• Clear all waiter earnings and reset analytics\n\n"
         "This does not delete order history or waiter accounts.\n\n"
         "Choose carefully before confirming."
     )
@@ -5085,13 +5088,17 @@ async def admin_panel_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         return
 
     if data == "admin:waiter_clear_confirm":
-        deleted_count = db.clear_waiter_earning_adjustments()
+        deleted_count, reset_count = db.clear_waiter_earning_adjustments()
         rows = db.waiter_performance(limit=30)
+        clear_summary = (
+            f"Deleted <b>{deleted_count}</b> manual adjustment records.\n"
+            f"Reset <b>{reset_count}</b> completed orders back to pending."
+        )
         await _edit_or_send_callback_message(
             query,
             text=(
                 "✅ <b>Waiter Records Cleared</b>\n\n"
-                f"Deleted <b>{deleted_count}</b> waiter earning adjustment records.\n\n"
+                f"{clear_summary}\n\n"
                 f"{format_waiter_analytics_dashboard(rows)}"
             ),
             parse_mode="HTML",
