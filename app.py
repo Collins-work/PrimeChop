@@ -5398,12 +5398,12 @@ async def admin_panel_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             query,
             text=format_admin_quick_actions(),
             parse_mode="HTML",
-            reply_markexport_orders_csv":
-        await export_orders_csv(update, context)
+            reply_markup=admin_quick_actions_keyboard(),
+        )
         return
 
-    if data == "admin:up=admin_quick_actions_keyboard(),
-        )
+    if data == "admin:export_orders_csv":
+        await export_orders_csv(update, context)
         return
 
     if data == "admin:waiter_routing_menu":
