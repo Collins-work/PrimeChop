@@ -528,6 +528,117 @@ class Database:
         self._refresh_waiter_registry_export()
         self._refresh_orders_users_export()
 
+    def export_all_orders_csv(self) -> Path:
+        export_name = f"all_orders_{datetime.now(self.tz).strftime('%Y%m%d_%H%M%S')}.csv"
+        export_path = self._human_data_dir / export_name
+
+        with self.connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    o.id,
+                    o.order_ref,
+                    o.order_details,
+                    o.amount,
+                    o.service_fee_total,
+                    o.waiter_share,
+                    o.platform_share,
+                    o.status,
+                    o.hall_name,
+                    o.room_number,
+                    o.payment_method,
+                    o.payment_provider,
+                    o.payment_tx_ref,
+                    o.created_at,
+                    o.accepted_at,
+                    o.completed_at,
+                    o.eta_minutes,
+                    o.eta_due_at,
+                    c.user_id AS customer_id,
+                    c.full_name AS customer_name,
+                    w.user_id AS waiter_id,
+                    w.full_name AS waiter_name,
+                    w.waiter_code AS waiter_code,
+                    m.name AS item_name
+                FROM orders o
+                LEFT JOIN users c ON c.user_id = o.customer_id
+                LEFT JOIN users w ON w.user_id = o.waiter_id
+                LEFT JOIN menu_items m ON m.id = o.item_id
+                ORDER BY o.id DESC
+                """
+            ).fetchall()
+
+        def _text(value) -> str:
+            if value is None:
+                return ""
+            return str(value)
+
+        self._human_data_dir.mkdir(parents=True, exist_ok=True)
+        with export_path.open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(
+                [
+                    "order_id",
+                    "order_ref",
+                    "order_date",
+                    "item_name",
+                    "order_details",
+                    "amount",
+                    "service_fee_total",
+                    "waiter_share",
+                    "platform_share",
+                    "status",
+                    "customer_id",
+                    "customer_name",
+                    "waiter_id",
+                    "waiter_name",
+                    "waiter_code",
+                    "hall_name",
+                    "room_number",
+                    "payment_method",
+                    "payment_provider",
+                    "payment_tx_ref",
+                    "created_at",
+                    "accepted_at",
+                    "completed_at",
+                    "eta_minutes",
+                    "eta_due_at",
+                ]
+            )
+            for row in rows:
+                created_at_text = _text(row["created_at"])
+                writer.writerow(
+                    [
+                        int(row["id"] or 0),
+                        row["order_ref"] or "",
+                        created_at_text[:10] if created_at_text else "",
+                        row["item_name"] or "",
+                        row["order_details"] or "",
+                        int(row["amount"] or 0),
+                        int(row["service_fee_total"] or 0),
+                        int(row["waiter_share"] or 0),
+                        int(row["platform_share"] or 0),
+                        row["status"] or "",
+                        int(row["customer_id"] or 0),
+                        row["customer_name"] or "",
+                        int(row["waiter_id"] or 0) if row["waiter_id"] is not None else "",
+                        row["waiter_name"] or "",
+                        row["waiter_code"] or "",
+                        row["hall_name"] or "",
+                        row["room_number"] or "",
+                        row["payment_method"] or "",
+                        row["payment_provider"] or "",
+                        row["payment_tx_ref"] or "",
+                        created_at_text,
+                        _text(row["accepted_at"]),
+                        _text(row["completed_at"]),
+                        int(row["eta_minutes"] or 0) if row["eta_minutes"] is not None else "",
+                        _text(row["eta_due_at"]),
+                    ]
+                )
+
+        return export_path
+
     def _normalize_vendor_name(self, name: str) -> str:
         text = (name or "").strip()
         if not text:

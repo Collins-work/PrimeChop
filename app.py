@@ -603,6 +603,7 @@ async def _set_admin_bot_commands(application: Application, chat_id: int) -> Non
             BotCommand("open_bot", "Reopen bot for customers"),
             BotCommand("close_waiter_routing", "Allow all waiters to claim hall orders"),
             BotCommand("open_waiter_routing", "Restore gender-based hall routing"),
+            BotCommand("export_orders_csv", "Export all orders to CSV"),
             BotCommand("waiter_online", "Set waiter online"),
             BotCommand("waiter_offline", "Set waiter offline"),
             BotCommand("waiter_logout", "Exit waiter mode to customer menu"),
@@ -1969,7 +1970,9 @@ def admin_quick_actions_keyboard() -> InlineKeyboardMarkup:
             [InlineKeyboardButton("✅ Pending Approvals", callback_data="adminwm:approve_waiters")],
             [InlineKeyboardButton("✉️ Invite Waiter", callback_data="admin:invite_waiter")],
             [InlineKeyboardButton("📦 Track Active Orders", callback_data="admin:order_tracker")],
-            [InlineKeyboardButton("🗑️ Clear Order History", callback_data="admin:clear_orders_prompt")],
+            [InlineKeyboardButton("🚦 Waiter Routing", callback_data="admin:waiter_routing_menu")],
+            [InlineKeyboardButton("� Export Orders CSV", callback_data="admin:export_orders_csv")],
+            [InlineKeyboardButton("�🗑️ Clear Order History", callback_data="admin:clear_orders_prompt")],
             [InlineKeyboardButton("📊 Open Analytics", callback_data="admin:order_analytics")],
             [InlineKeyboardButton("⚙️ Maintenance Mode", callback_data="admin:maintenance_menu")],
             [InlineKeyboardButton("🔙 Back to Admin Home", callback_data="admin:menu")],
@@ -1996,6 +1999,22 @@ def admin_maintenance_keyboard(bot_open: bool) -> InlineKeyboardMarkup:
                 [InlineKeyboardButton("🔙 Back to Quick Actions", callback_data="admin:menu_quick")],
             ]
         )
+
+
+def admin_waiter_routing_keyboard(routing_enabled: bool) -> InlineKeyboardMarkup:
+    if routing_enabled:
+        return InlineKeyboardMarkup(
+            [
+                [InlineKeyboardButton("🚻 Close Gender Routing", callback_data="admin:waiter_routing_close")],
+                [InlineKeyboardButton("🔙 Back to Quick Actions", callback_data="admin:menu_quick")],
+            ]
+        )
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("🟢 Open to All Waiters", callback_data="admin:waiter_routing_open")],
+            [InlineKeyboardButton("🔙 Back to Quick Actions", callback_data="admin:menu_quick")],
+        ]
+    )
     else:
         return InlineKeyboardMarkup(
             [
@@ -5011,6 +5030,10 @@ async def admin_panel_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         "admin:order_tracker",
         "admin:waiter_analytics",
         "admin:menu_quick",
+        "admin:waiter_routing_menu",
+        "admin:waiter_routing_close",
+        "admin:waiter_routing_open",
+        "admin:export_orders_csv",
     }
 
     if not has_super_admin_access(user.id, context):
@@ -5375,7 +5398,54 @@ async def admin_panel_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             query,
             text=format_admin_quick_actions(),
             parse_mode="HTML",
-            reply_markup=admin_quick_actions_keyboard(),
+            reply_markexport_orders_csv":
+        await export_orders_csv(update, context)
+        return
+
+    if data == "admin:up=admin_quick_actions_keyboard(),
+        )
+        return
+
+    if data == "admin:waiter_routing_menu":
+        routing_enabled = db.is_waiter_gender_routing_enabled()
+        status_text = (
+            "🚻 <b>Currently Gender-Based</b>\n\n"
+            "Orders in gender-restricted halls are visible only to matching waiters."
+            if routing_enabled
+            else "🟢 <b>Currently Open to All Waiters</b>\n\n"
+            "Male and female waiters can claim orders from any hall."
+        )
+        await _edit_or_send_callback_message(
+            query,
+            text=f"🚦 <b>Waiter Routing Control</b>\n\n{status_text}",
+            parse_mode="HTML",
+            reply_markup=admin_waiter_routing_keyboard(routing_enabled),
+        )
+        return
+
+    if data == "admin:waiter_routing_close":
+        db.set_waiter_gender_routing_enabled(False)
+        await _edit_or_send_callback_message(
+            query,
+            text=(
+                "🟢 <b>Waiter routing opened to all waiters</b>\n\n"
+                "Gender checks are now bypassed for hall-based order claims."
+            ),
+            parse_mode="HTML",
+            reply_markup=admin_waiter_routing_keyboard(False),
+        )
+        return
+
+    if data == "admin:waiter_routing_open":
+        db.set_waiter_gender_routing_enabled(True)
+        await _edit_or_send_callback_message(
+            query,
+            text=(
+                "🚻 <b>Waiter routing restored to gender-based</b>\n\n"
+                "Hall restrictions are active again for matching waiter genders."
+            ),
+            parse_mode="HTML",
+            reply_markup=admin_waiter_routing_keyboard(True),
         )
         return
 
@@ -6005,6 +6075,31 @@ async def open_waiter_routing(update: Update, context: ContextTypes.DEFAULT_TYPE
         "Use /close_waiter_routing to open access to all waiters again.",
         parse_mode="HTML",
     )
+
+
+async def export_orders_csv(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if query:
+        await query.answer("Exporting orders CSV...")
+        user = query.from_user
+    else:
+        user = update.effective_user
+
+    if not is_admin(user.id) and not has_super_admin_access(user.id, context):
+        target_message = query.message if query else update.effective_message
+        if target_message:
+            await target_message.reply_text(format_unauthorized(), parse_mode="HTML")
+        return
+
+    export_path = db.export_all_orders_csv()
+    caption = f"✅ All orders exported to CSV.\n\nFile: <code>{export_path.name}</code>"
+    with export_path.open("rb") as handle:
+        await context.bot.send_document(
+            chat_id=user.id,
+            document=handle,
+            caption=caption,
+            parse_mode="HTML",
+        )
 
 
 async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -7619,6 +7714,7 @@ def main():
     app.add_handler(CommandHandler("topup", topup))
     app.add_handler(CommandHandler("confirm_topup", confirm_topup))
     app.add_handler(CommandHandler("close_waiter_registration", close_waiter_registration))
+    app.add_handler(CommandHandler("export_orders_csv", export_orders_csv))
     app.add_handler(CommandHandler("open_waiter_registration", open_waiter_registration))
     app.add_handler(CommandHandler("close_bot", close_bot))
     app.add_handler(CommandHandler("open_bot", open_bot))
