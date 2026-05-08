@@ -263,6 +263,9 @@ class Settings:
     prime_ai_model: str
     prime_ai_timeout_seconds: float
     default_delivery_eta_minutes: int
+    waiter_available_orders_max_age_hours: int
+    waiter_available_orders_rollover_hours: int
+    waiter_active_orders_max_age_hours: int
     allow_order_history_purge: bool
 
 
@@ -344,6 +347,9 @@ settings = Settings(
     prime_ai_model=os.getenv("PRIME_AI_MODEL", "openai/gpt-4o-mini").strip(),
     prime_ai_timeout_seconds=max(5.0, float(os.getenv("PRIME_AI_TIMEOUT_SECONDS", "20"))),
     default_delivery_eta_minutes=max(8, int(os.getenv("DEFAULT_DELIVERY_ETA_MINUTES", "25"))),
+    waiter_available_orders_max_age_hours=max(1, int(os.getenv("WAITER_AVAILABLE_ORDERS_MAX_AGE_HOURS", "24"))),
+    waiter_available_orders_rollover_hours=max(0, int(os.getenv("WAITER_AVAILABLE_ORDERS_ROLLOVER_HOURS", "24"))),
+    waiter_active_orders_max_age_hours=max(1, int(os.getenv("WAITER_ACTIVE_ORDERS_MAX_AGE_HOURS", "48"))),
     allow_order_history_purge=_parse_bool(os.getenv("ALLOW_ORDER_HISTORY_PURGE", "false"), default=False),
 )
 

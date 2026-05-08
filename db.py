@@ -90,7 +90,15 @@ class _CompatConnection:
 
 
 class Database:
-    def __init__(self, database_url: str, timezone_name: str, allow_order_history_purge: bool = False):
+    def __init__(
+        self,
+        database_url: str,
+        timezone_name: str,
+        allow_order_history_purge: bool = False,
+        waiter_available_orders_max_age_hours: int = 24,
+        waiter_available_orders_rollover_hours: int = 24,
+        waiter_active_orders_max_age_hours: int = 48,
+    ):
         """
         Initialize database connection using PostgreSQL.
         
@@ -104,6 +112,9 @@ class Database:
         
         self.tz = ZoneInfo(timezone_name)
         self._allow_order_history_purge = bool(allow_order_history_purge)
+        self._waiter_available_orders_max_age_hours = max(1, int(waiter_available_orders_max_age_hours or 24))
+        self._waiter_available_orders_rollover_hours = max(0, int(waiter_available_orders_rollover_hours or 24))
+        self._waiter_active_orders_max_age_hours = max(1, int(waiter_active_orders_max_age_hours or 48))
         self._human_exports_enabled = (os.getenv("HUMAN_READABLE_EXPORTS_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"})
         
         # Create human_readable export directory
@@ -1955,6 +1966,8 @@ class Database:
             ).fetchall()
 
     def list_unclaimed_paid_orders(self, limit: int = 20) -> list[sqlite3.Row]:
+        cutoff_hours = self._waiter_available_orders_max_age_hours + self._waiter_available_orders_rollover_hours
+        created_after = (datetime.now(self.tz) - timedelta(hours=cutoff_hours)).isoformat()
         with self.connection() as conn:
             return conn.execute(
                 """
@@ -1966,14 +1979,17 @@ class Database:
                     o.hall_name,
                     o.room_number,
                     m.name AS item_name,
-                    o.created_at
+                    o.created_at,
+                    o.status,
+                    o.waiter_id
                 FROM orders o
                 LEFT JOIN menu_items m ON m.id = o.item_id
                 WHERE o.status='pending_waiter' AND o.waiter_id IS NULL
+                    AND o.created_at >= ?
                 ORDER BY o.id DESC
                 LIMIT ?
                 """,
-                (limit,),
+                (created_after, limit),
             ).fetchall()
 
     def list_waiter_claimed_orders(self, waiter_id: int, limit: int = 20) -> list[sqlite3.Row]:
@@ -2001,6 +2017,7 @@ class Database:
             ).fetchall()
 
     def list_waiter_active_orders(self, limit: int = 40) -> list[sqlite3.Row]:
+        created_after = (datetime.now(self.tz) - timedelta(hours=self._waiter_active_orders_max_age_hours)).isoformat()
         with self.connection() as conn:
             return conn.execute(
                 """
@@ -2019,12 +2036,13 @@ class Database:
                 FROM orders o
                 LEFT JOIN menu_items m ON m.id = o.item_id
                 LEFT JOIN users u ON u.user_id = o.waiter_id
-                                WHERE o.status IN ('pending_waiter', 'claimed')
-                                    AND o.completed_at IS NULL
+                WHERE o.status IN ('pending_waiter', 'claimed')
+                    AND o.completed_at IS NULL
+                    AND o.created_at >= ?
                 ORDER BY o.id DESC
                 LIMIT ?
                 """,
-                (limit,),
+                (created_after, limit),
             ).fetchall()
 
     def order_analytics(self, limit: int = 5) -> dict:

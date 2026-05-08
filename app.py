@@ -990,6 +990,9 @@ db = Database(
     database_url=settings.database_url,
     timezone_name=settings.bot_timezone,
     allow_order_history_purge=settings.allow_order_history_purge,
+    waiter_available_orders_max_age_hours=settings.waiter_available_orders_max_age_hours,
+    waiter_available_orders_rollover_hours=settings.waiter_available_orders_rollover_hours,
+    waiter_active_orders_max_age_hours=settings.waiter_active_orders_max_age_hours,
 )
 try:
     audit_trail = ExcelAuditTrail(
@@ -1590,7 +1593,8 @@ def _waiter_can_receive_hall(waiter_gender: str, hall_name: str) -> bool:
 
 
 def _filter_available_orders_for_waiter(waiter_gender: str, rows: list) -> list:
-    return [row for row in rows if _waiter_can_receive_hall(waiter_gender, row["hall_name"] or "")]
+    # Defensive filter: only show pending_waiter status with no waiter assigned
+    return [row for row in rows if row.get("status") == "pending_waiter" and row.get("waiter_id") is None and _waiter_can_receive_hall(waiter_gender, row["hall_name"] or "")]
 
 
 def _filter_active_board_for_waiter(waiter_gender: str, rows: list) -> list:
