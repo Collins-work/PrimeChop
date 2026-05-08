@@ -2330,7 +2330,8 @@ class Database:
                     m.name AS item_name,
                     c.full_name AS customer_name,
                     w.full_name AS waiter_name,
-                    w.waiter_code AS waiter_code
+                    w.waiter_code AS waiter_code,
+                    w.waiter_gender AS waiter_gender
                 FROM orders o
                 LEFT JOIN menu_items m ON m.id = o.item_id
                 LEFT JOIN users c ON c.user_id = o.customer_id

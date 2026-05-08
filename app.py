@@ -3393,6 +3393,9 @@ def format_admin_order_tracker(rows: list) -> str:
         delivery_time = _format_delivery_time_text_12h(row["delivery_time"] or "")
         waiter_code = row["waiter_code"] or "N/A"
         waiter_name = row["waiter_name"] or "Unassigned"
+        waiter_gender = (row.get("waiter_gender") or "").lower()
+        gender_emoji = "👨" if waiter_gender == "male" else ("👩" if waiter_gender == "female" else "")
+        waiter_display = f"{gender_emoji} {waiter_name}".strip() if gender_emoji else waiter_name
         customer_name = row["customer_name"] or "Unknown customer"
         rating = row["customer_rating"]
         amount = int(row["amount"] or 0)
@@ -3436,7 +3439,7 @@ def format_admin_order_tracker(rows: list) -> str:
             f"🏪 <b>Vendor:</b> {vendor_name}\n"
             f"💰 <b>Amount:</b> ₦{amount:,}\n"
             f"🕐 <b>Delivery Time:</b> {delivery_time or 'Not set'}\n"
-            f"👤 <b>Waiter:</b> {waiter_name} [{waiter_code}]\n"
+            f"👤 <b>Waiter:</b> {waiter_display} [{waiter_code}]\n"
             f"🙍 <b>Customer:</b> {customer_name}\n"
             f"📍 <b>Delivery:</b> {hall_name} Room {room_number}\n"
             f"{time_block}\n"
