@@ -3327,7 +3327,12 @@ def waiter_complete_list_keyboard(orders: list) -> InlineKeyboardMarkup:
     rows = []
     for row in orders[:10]:
         order_ref = row["order_ref"] or str(row["id"])
-        rows.append([InlineKeyboardButton(f"✅ Complete #{order_ref}", callback_data=f"complete_claim:{row['id']}")])
+        rows.append(
+            [
+                InlineKeyboardButton(f"✅ Complete #{order_ref}", callback_data=f"complete_claim:{row['id']}"),
+                InlineKeyboardButton("↩️ Abandon", callback_data=f"abandon_claim:{row['id']}")
+            ]
+        )
     return InlineKeyboardMarkup(rows)
 
 
@@ -6990,6 +6995,14 @@ async def claim_order_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     claimed = db.claim_order(order_id, waiter_user_id, settings.default_delivery_eta_minutes)
 
     if not claimed:
+        # Distinguish between 'already claimed by another waiter' and 'waiter reached max concurrent claims'
+        current_claims = db.list_waiter_claimed_orders(waiter_user_id, limit=10)
+        if len(current_claims) >= 3:
+            await query.answer(
+                "You already have 3 active claimed orders. Complete or abandon one before claiming another.",
+                show_alert=True,
+            )
+            return
         await query.answer("Order already claimed by another waiter.", show_alert=True)
         return
 
@@ -7046,6 +7059,25 @@ async def claim_order_callback(update: Update, context: ContextTypes.DEFAULT_TYP
                 text=format_waiter_order_book(available_orders),
                 parse_mode="HTML",
                 reply_markup=waiter_claim_list_keyboard(available_orders),
+            )
+        # Also send the waiter's current claimed orders (up to 10) so they can manage them immediately
+        claimed_orders = db.list_waiter_claimed_orders(waiter_user_id, limit=10)
+        if claimed_orders:
+            lines = ["🧾 <b>Your Claimed Orders</b>", "Manage each claimed order using the buttons."]
+            for row in claimed_orders:
+                order_ref = row["order_ref"] or str(row["id"])
+                hall_name = row["hall_name"] or "Unknown hall"
+                room_number = row["room_number"] or "N/A"
+                delivery_time = _format_delivery_time_text_12h(row["delivery_time"] or "")
+                lines.append(f"#{order_ref} (ID: {row['id']}) - ₦{int(row['amount'] or 0):,}")
+                lines.append(f"   Delivery: {hall_name} Room {room_number}")
+                if delivery_time:
+                    lines.append(f"   Time: {delivery_time}")
+            await context.bot.send_message(
+                chat_id=waiter.id,
+                text="\n".join(lines),
+                parse_mode="HTML",
+                reply_markup=waiter_complete_list_keyboard(claimed_orders),
             )
         return
 
