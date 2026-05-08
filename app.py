@@ -2015,13 +2015,6 @@ def admin_waiter_routing_keyboard(routing_enabled: bool) -> InlineKeyboardMarkup
             [InlineKeyboardButton("🔙 Back to Quick Actions", callback_data="admin:menu_quick")],
         ]
     )
-    else:
-        return InlineKeyboardMarkup(
-            [
-                [InlineKeyboardButton("🟢 Open Bot for Customers", callback_data="admin:maintenance_open")],
-                [InlineKeyboardButton("🔙 Back to Quick Actions", callback_data="admin:menu_quick")],
-            ]
-        )
 
 
 def mock_payment_actions_keyboard(
