@@ -986,6 +986,29 @@ class Database:
                 ("1" if is_open else "0", now),
             )
 
+    def is_waiter_gender_routing_enabled(self) -> bool:
+        with self.connection() as conn:
+            row = conn.execute(
+                "SELECT value FROM bot_flags WHERE key='waiter_gender_routing_enabled' LIMIT 1"
+            ).fetchone()
+            if not row:
+                return True
+            return str(row["value"] or "").strip().lower() in {"1", "true", "yes", "on"}
+
+    def set_waiter_gender_routing_enabled(self, enabled: bool):
+        now = self.now_iso()
+        with self.connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO bot_flags (key, value, updated_at)
+                VALUES ('waiter_gender_routing_enabled', ?, ?)
+                ON CONFLICT(key) DO UPDATE SET
+                    value=excluded.value,
+                    updated_at=excluded.updated_at
+                """,
+                ("1" if enabled else "0", now),
+            )
+
     def assign_waiter_invite(self, user_id: int, full_name: str, waiter_code: str, waiter_gender: str | None = None):
         now = self.now_iso()
         normalized_gender = (waiter_gender or "").strip().lower()

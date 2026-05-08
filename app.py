@@ -601,6 +601,8 @@ async def _set_admin_bot_commands(application: Application, chat_id: int) -> Non
             BotCommand("open_waiter_registration", "Open new waiter registration"),
             BotCommand("close_bot", "Close bot for maintenance"),
             BotCommand("open_bot", "Reopen bot for customers"),
+            BotCommand("close_waiter_routing", "Allow all waiters to claim hall orders"),
+            BotCommand("open_waiter_routing", "Restore gender-based hall routing"),
             BotCommand("waiter_online", "Set waiter online"),
             BotCommand("waiter_offline", "Set waiter offline"),
             BotCommand("waiter_logout", "Exit waiter mode to customer menu"),
@@ -1525,6 +1527,8 @@ def _normalized_hall_name(hall_name: str) -> str:
 
 
 def _required_waiter_gender_for_hall(hall_name: str) -> str | None:
+    if not db.is_waiter_gender_routing_enabled():
+        return None
     hall = _normalized_hall_name(hall_name)
     if hall in FEMALE_ONLY_HALLS:
         return "female"
@@ -5961,6 +5965,48 @@ async def open_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def close_waiter_routing(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if not is_admin(user.id) and not has_super_admin_access(user.id, context):
+        await update.effective_message.reply_text(format_unauthorized(), parse_mode="HTML")
+        return
+
+    if not db.is_waiter_gender_routing_enabled():
+        await update.effective_message.reply_text(
+            "ℹ️ Hall routing is already open to all waiters."
+        )
+        return
+
+    db.set_waiter_gender_routing_enabled(False)
+    await update.effective_message.reply_text(
+        "🟢 <b>Hall routing is now OPEN to all waiters</b>\n\n"
+        "Male and female waiters can now claim orders from any hall.\n"
+        "Use /open_waiter_routing to restore gender-based routing.",
+        parse_mode="HTML",
+    )
+
+
+async def open_waiter_routing(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if not is_admin(user.id) and not has_super_admin_access(user.id, context):
+        await update.effective_message.reply_text(format_unauthorized(), parse_mode="HTML")
+        return
+
+    if db.is_waiter_gender_routing_enabled():
+        await update.effective_message.reply_text(
+            "ℹ️ Hall routing is already gender-based."
+        )
+        return
+
+    db.set_waiter_gender_routing_enabled(True)
+    await update.effective_message.reply_text(
+        "🚻 <b>Hall routing is now gender-based again</b>\n\n"
+        "Orders in gender-restricted halls will only be shown to matching waiters.\n"
+        "Use /close_waiter_routing to open access to all waiters again.",
+        parse_mode="HTML",
+    )
+
+
 async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if not is_admin(user.id) and not has_super_admin_access(user.id, context):
@@ -7576,6 +7622,8 @@ def main():
     app.add_handler(CommandHandler("open_waiter_registration", open_waiter_registration))
     app.add_handler(CommandHandler("close_bot", close_bot))
     app.add_handler(CommandHandler("open_bot", open_bot))
+    app.add_handler(CommandHandler("close_waiter_routing", close_waiter_routing))
+    app.add_handler(CommandHandler("open_waiter_routing", open_waiter_routing))
     app.add_handler(CommandHandler("broadcast", broadcast))
     app.add_handler(CommandHandler("view_messages", view_customer_messages))
     app.add_handler(CommandHandler("view_message", view_single_message))
