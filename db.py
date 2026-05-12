@@ -948,6 +948,31 @@ class Database:
                     (name, now, now),
                 )
 
+    def deactivate_vendor_by_name(self, name: str) -> bool:
+        cleaned = self._normalize_vendor_name(name)
+        if not cleaned:
+            return False
+
+        now = self.now_iso()
+        with self.connection() as conn:
+            vendor = conn.execute(
+                "SELECT id FROM vendors WHERE name=? LIMIT 1",
+                (cleaned,),
+            ).fetchone()
+            if not vendor:
+                return False
+
+            vendor_id = int(vendor["id"])
+            conn.execute(
+                "UPDATE vendors SET active=0, updated_at=? WHERE id=?",
+                (now, vendor_id),
+            )
+            conn.execute(
+                "UPDATE menu_items SET active=0, updated_at=? WHERE vendor_id=?",
+                (now, vendor_id),
+            )
+        return True
+
     def upsert_vendor(self, name: str) -> sqlite3.Row:
         now = self.now_iso()
         cleaned = self._normalize_vendor_name(name)

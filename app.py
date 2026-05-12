@@ -151,6 +151,12 @@ DELIVERY_TIME_SLOTS = [
     ("18:30", "19:45"),
 ]
 
+DELIVERY_SERVICE_FEE = 500
+
+REMOVED_ORDER_VENDORS = (
+    "D4fries",
+)
+
 DELIVERY_SLOT_VISIBILITY_START_HOUR = 0
 
 FEMALE_ONLY_HALLS = {
@@ -1304,9 +1310,6 @@ def start_paystack_callback_server():
 
 
 FIXED_VENDOR_PRODUCTS: dict[str, list[tuple[str, int]]] = {
-    "D4fries": [
-        ("Chicken and chips", 3200),
-    ],
     "Emabuop": [
         ("Bole (potatoes and yam) - from", 1300),
         ("Egg", 300),
@@ -1615,9 +1618,13 @@ def service_fee_split(total: int, mode: str) -> tuple[int, int]:
 
 
 def calculate_dynamic_service_fee(order_amount: int) -> int:
-    amount = max(0, int(order_amount))
-    paystack_charge = math.ceil((0.02 * amount) + 100)
-    return 500 + min(2000, paystack_charge)
+    _ = max(0, int(order_amount))
+    return DELIVERY_SERVICE_FEE
+
+
+def _deactivate_removed_vendors():
+    for vendor_name in REMOVED_ORDER_VENDORS:
+        db.deactivate_vendor_by_name(vendor_name)
 
 
 def normalize_room(room_text: str) -> str | None:
@@ -7647,6 +7654,7 @@ def main():
         logger.info(f"✅ Menu already has {vendor_count} vendors, skipping bootstrap")
 
     restored_vendors = reconcile_fixed_menu_vendors()
+    _deactivate_removed_vendors()
     if restored_vendors:
         logger.info("✅ Restored fixed vendor menus: %s", ", ".join(restored_vendors))
     else:

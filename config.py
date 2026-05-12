@@ -22,7 +22,6 @@ DEFAULT_ORDER_VENDORS = [
     "Waffledom",
     "Yamarita",
     "Burrito chicken",
-    "D4fries",
     "Emabuop",
     "DGG Grills",
     "Evelyn chip& protein",
@@ -315,7 +314,7 @@ settings = Settings(
     )),
     paystack_web_host=os.getenv("PAYSTACK_WEB_HOST", "0.0.0.0").strip(),
     paystack_web_port=int(os.getenv("PAYSTACK_WEB_PORT", os.getenv("PORT", "8080"))),
-    service_fee_total=int(os.getenv("SERVICE_FEE_TOTAL", "650")),
+    service_fee_total=int(os.getenv("SERVICE_FEE_TOTAL", "500")),
     service_fee_split_mode=os.getenv("SERVICE_FEE_SPLIT_MODE", "equal").strip().lower(),
     placeholder_image_url=os.getenv(
         "PLACEHOLDER_IMAGE_URL",
