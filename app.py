@@ -61,6 +61,7 @@ from ui import (
     format_admin_additem_start,
     format_admin_additem_success,
     format_become_waiter_success,
+    format_cancelled_action,
     format_waiter_rejection_notice,
     format_start_banner_caption,
         format_catalog_items_list,
@@ -78,7 +79,6 @@ from ui import (
     format_menu_vendor_caption,
     format_menu_item_caption,
     format_hall_prompt,
-    format_prime_exit,
     format_prime_intro,
     format_order_payment_pending,
     format_order_payment_ready,
@@ -368,6 +368,77 @@ def _prime_clear_state(context: ContextTypes.DEFAULT_TYPE):
     context.user_data.pop("prime_chat_history", None)
 
 
+def _cancel_action_label(update: Update, context: ContextTypes.DEFAULT_TYPE) -> str | None:
+    user = update.effective_user
+    if user and runtime.add_item_draft.get(user.id):
+        return "item creation"
+    if context.user_data.get("cart_note_mode"):
+        return "cart note"
+    if context.user_data.get("cart_room_mode"):
+        return "room entry"
+    if context.user_data.get("order_draft"):
+        return "order flow"
+    if context.user_data.get("topup_mode"):
+        return "top-up"
+    if context.user_data.get("feedback_mode"):
+        return "feedback"
+    if context.user_data.get("waiter_register_mode"):
+        return "waiter registration"
+    if context.user_data.get("waiter_login_mode"):
+        return "waiter login"
+    if context.user_data.get("admin_login_mode"):
+        return "admin login"
+    if context.user_data.get("admin_phone_verify_mode"):
+        return "phone verification"
+    if context.user_data.get("admin_invite_mode"):
+        return "admin invite"
+    if context.user_data.get("admin_deactivate_mode"):
+        return "vendor deactivation"
+    if context.user_data.get("admin_manual_earnings_mode"):
+        return "manual earnings update"
+    if context.user_data.get("admin_waiter_rejection_mode"):
+        return "waiter rejection"
+    if context.user_data.get("admin_waiter_gender_mode"):
+        return "waiter gender update"
+    if context.user_data.get("admin_search_waiter_mode"):
+        return "waiter search"
+    if context.user_data.get("admin_reply_mode"):
+        return "reply draft"
+    if context.user_data.get("admin_catalog_search_mode"):
+        return "catalog search"
+    if context.user_data.get("admin_catalog_edit_mode"):
+        return "catalog edit"
+    if context.user_data.get("prime_game"):
+        return "assistant game"
+    if context.user_data.get("prime_mode"):
+        return "assistant chat"
+    for key, value in context.user_data.items():
+        if key.endswith("_mode") and value:
+            return key.removesuffix("_mode").replace("_", " ")
+    return None
+
+
+def _clear_cancelable_state(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    _prime_clear_state(context)
+    if update.effective_user:
+        runtime.add_item_draft.pop(update.effective_user.id, None)
+    for key in list(context.user_data):
+        if key.endswith("_mode") or key in {"order_draft", "prime_game", "prime_chat_history"}:
+            context.user_data.pop(key, None)
+
+
+async def _cancel_current_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    action_label = _cancel_action_label(update, context)
+    _clear_cancelable_state(update, context)
+    role = user_role(update.effective_user.id)
+    await update.effective_message.reply_text(
+        format_cancelled_action(action_label),
+        parse_mode="HTML",
+        reply_markup=home_keyboard(role),
+    )
+    return ConversationHandler.END
+
+
 def _prime_match_service_response(text: str) -> str:
     normalized = _prime_normalize(text)
     for pattern, response in PRIME_SERVICE_RESPONSES:
@@ -558,7 +629,7 @@ async def _set_public_bot_commands(application: Application, chat_id: int | None
         BotCommand("order_history", "View recent orders"),
         BotCommand("terms", "View terms and conditions"),
         BotCommand("clear", "Clear recent chat messages"),
-        BotCommand("cancel", "Exit Prime chat mode"),
+        BotCommand("cancel", "Cancel the current action"),
         BotCommand("wallet", "Check wallet balance"),
         BotCommand("topup", "Top up wallet balance"),
         BotCommand("menu", "Open food menu"),
@@ -585,7 +656,7 @@ async def _set_admin_bot_commands(application: Application, chat_id: int) -> Non
             BotCommand("order_history", "View recent orders"),
             BotCommand("terms", "View terms and conditions"),
             BotCommand("clear", "Clear recent chat messages"),
-            BotCommand("cancel", "Exit Prime chat mode"),
+            BotCommand("cancel", "Cancel the current action"),
             BotCommand("wallet", "Check wallet balance"),
             BotCommand("topup", "Top up wallet balance"),
             BotCommand("menu", "Open food menu"),
@@ -871,13 +942,7 @@ def _prime_game_reply(text: str, context: ContextTypes.DEFAULT_TYPE) -> str | No
 
 
 async def _prime_exit(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    _prime_clear_state(context)
-    role = user_role(update.effective_user.id)
-    await update.effective_message.reply_text(
-        format_prime_exit(),
-        parse_mode="HTML",
-        reply_markup=home_keyboard(role),
-    )
+    await _cancel_current_action(update, context)
 
 
 async def prime_assistant(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -6957,10 +7022,7 @@ async def order_time_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def order_flow_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data.pop("order_draft", None)
-    context.user_data.pop("cart_room_mode", None)
-    await update.effective_message.reply_text("Order flow cancelled.")
-    return ConversationHandler.END
+    return await _cancel_current_action(update, context)
 
 
 async def claim_order_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -7566,10 +7628,7 @@ async def additem_save(user_id: int, update: Update, context: ContextTypes.DEFAU
 
 
 async def additem_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    runtime.add_item_draft.pop(user.id, None)
-    await update.effective_message.reply_text("Item creation cancelled.")
-    return ConversationHandler.END
+    return await _cancel_current_action(update, context)
 
 
 def bootstrap_menu_if_empty():

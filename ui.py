@@ -323,12 +323,23 @@ def format_prime_intro(cafeteria_name: str) -> str:
     )
 
 
-def format_prime_exit() -> str:
-    """Format Prime exit message."""
+def format_cancelled_action(action_label: str | None = None) -> str:
+    """Format a generic cancel confirmation message."""
+    if action_label:
+        return (
+            "✨ <b>Action Cancelled</b>\n\n"
+            f"Your <b>{escape(action_label)}</b> has been cancelled.\n\n"
+            "You are back on the main menu."
+        )
     return (
-        "✨ <b>Prime Closed</b>\n\n"
-        "You are back on the main menu. Tap <b>Prime</b> whenever you need help."
+        "✨ <b>Action Cancelled</b>\n\n"
+        "You are back on the main menu."
     )
+
+
+def format_prime_exit(action_label: str | None = None) -> str:
+    """Format Prime exit message."""
+    return format_cancelled_action(action_label)
 
 
 def format_become_waiter_success(name: str) -> str:
