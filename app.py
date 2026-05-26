@@ -3637,32 +3637,32 @@ async def send_start_banner(update: Update, role: str, context: ContextTypes.DEF
         update.effective_user.full_name,
     )
     has_logo, logo_source = _resolve_logo_source()
-    sent_banner = False
+    # Combine caption + welcome + prompt into one message so users see a single welcome.
+    combined_text = format_start_banner_caption(settings.cafeteria_name, "Welcome") + "\n\n" + welcome_text + "\n\nChoose an option below."
 
     if has_logo:
         try:
             if logo_source.startswith("http://") or logo_source.startswith("https://"):
                 await message.reply_photo(
                     photo=logo_source,
-                    caption=format_start_banner_caption(settings.cafeteria_name, "Welcome"),
+                    caption=combined_text,
                     parse_mode="HTML",
+                    reply_markup=home_keyboard(role),
                 )
-                sent_banner = True
+                return
 
-            if not sent_banner:
-                with open(logo_source, "rb") as logo_file:
-                    await message.reply_photo(
-                        photo=logo_file,
-                        caption=format_start_banner_caption(settings.cafeteria_name, "Welcome"),
-                        parse_mode="HTML",
-                    )
-                    sent_banner = True
+            with open(logo_source, "rb") as logo_file:
+                await message.reply_photo(
+                    photo=logo_file,
+                    caption=combined_text,
+                    parse_mode="HTML",
+                    reply_markup=home_keyboard(role),
+                )
+                return
         except Exception:
             logger.exception("Unable to send logo on /start; falling back to text")
 
-    await message.reply_text(welcome_text, parse_mode="HTML")
-
-    await message.reply_text("Choose an option below.", reply_markup=home_keyboard(role))
+    await message.reply_text(combined_text, parse_mode="HTML", reply_markup=home_keyboard(role))
 
 
 async def _edit_or_send_callback_message(

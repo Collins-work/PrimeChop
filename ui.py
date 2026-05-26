@@ -271,10 +271,8 @@ def cart_actions_keyboard() -> InlineKeyboardMarkup:
 # ==================== MESSAGE FORMATTERS ====================
 def format_start_banner_caption(cafeteria_name: str, period_label: str) -> str:
     """Format the short caption shown with the welcome image."""
-    return (
-        "🍽️ <b>PrimeChop Picks</b>\n"
-        f"<b>{cafeteria_name}</b> • {period_label}"
-    )
+    # Keep caption short and brand-focused; omit cafeteria name for a friendlier tone.
+    return "🍽️ <b>PrimeChop Picks</b> • Welcome"
 
 
 def format_start_message(
@@ -284,13 +282,12 @@ def format_start_message(
     user_name: str = "",
 ) -> str:
     """Format fixed welcome message shown on /start."""
+    name_part = f" {user_name.split(' ')[0]}" if user_name else ""
     return (
-        "✨ Welcome to PrimeChop! ✨\n\n"
-        "Hungry?\n"
-        "Curious?\n"
-        "Or just exploring?\n\n"
-        "You have stepped into a kitchen where orders fly fast and service is always sharp. 🍴\n\n"
-        "Type your first request and let's get cooking - your table is already reserved."
+        "👋 Hey there" + name_part + " — welcome to PrimeChop! 🎉\n\n"
+        "Got the munchies? Craving something tasty? You’re in the right place. 😋\n\n"
+        "Tap a button below to browse the menu, place an order, or top up your wallet.\n\n"
+        "We’ll ping you when your food’s on the way — fast and friendly. 🚀"
     )
 
 
