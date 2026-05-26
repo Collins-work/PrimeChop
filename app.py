@@ -1264,6 +1264,80 @@ def _is_paystack_signature_valid(raw_body: bytes, signature: str) -> bool:
     return payments.is_valid_webhook_signature(raw_body, signature)
 
 
+async def _initialize_bot_metadata(application: Application):
+    await application.bot.set_my_description(
+        "PRIMECHOP - Your Campus Food Delivery Bot\n\n"
+        "Order meals, snacks, and drinks from trusted campus vendors in minutes.\n"
+        "Secure wallet and Paystack payments.\n"
+        "Fast delivery updates to your hall and room.\n\n"
+        "Smart. Reliable. Built for students."
+    )
+    await application.bot.set_my_short_description(
+        "Campus food ordering with secure payments and fast delivery tracking."
+    )
+    await _set_public_bot_commands(application)
+
+
+async def _telegram_webhook_handler(request: web.Request, application: Application) -> web.Response:
+    try:
+        payload = await request.json()
+    except Exception:
+        return web.Response(text="Invalid Telegram webhook payload", status=400)
+
+    if not isinstance(payload, dict):
+        return web.Response(text="Invalid Telegram webhook payload", status=400)
+
+    try:
+        update = Update.de_json(payload, application.bot)
+    except Exception:
+        logger.exception("Unable to decode Telegram webhook payload")
+        return web.Response(text="Invalid Telegram webhook payload", status=400)
+
+    try:
+        await application.process_update(update)
+    except Exception:
+        logger.exception("Telegram webhook update processing failed")
+        return web.Response(text="Update processing failed", status=500)
+
+    return web.Response(text="OK", status=200)
+
+
+async def _run_combined_webhook_server(application: Application, webhook_url: str, webhook_path: str):
+    webhook_app = web.Application()
+    webhook_app.router.add_post(webhook_path, lambda request: _telegram_webhook_handler(request, application))
+    webhook_app.router.add_get("/paystack/callback", paystack_wallet_callback)
+    webhook_app.router.add_post("/paystack/callback", paystack_wallet_callback)
+
+    runner = web.AppRunner(webhook_app)
+    await runner.setup()
+    site = web.TCPSite(runner, settings.webhook_listen_host, settings.webhook_port)
+
+    await application.initialize()
+    await _initialize_bot_metadata(application)
+    await application.start()
+
+    await site.start()
+    await application.bot.set_webhook(
+        url=webhook_url,
+        allowed_updates=settings.allowed_updates,
+        drop_pending_updates=settings.lightweight_mode,
+    )
+
+    try:
+        await asyncio.Event().wait()
+    finally:
+        try:
+            await application.bot.delete_webhook(drop_pending_updates=False)
+        except Exception:
+            logger.exception("Failed to delete Telegram webhook during shutdown")
+
+        try:
+            await application.stop()
+        finally:
+            await application.shutdown()
+            await runner.cleanup()
+
+
 async def paystack_wallet_callback(request: web.Request) -> web.Response:
     payload = {}
     raw_body = b""
@@ -7720,7 +7794,8 @@ def main():
         logger.info("✅ Fixed vendor menus already healthy")
     
     logger.info("Setting up Paystack callback server...")
-    start_paystack_callback_server()
+    if not settings.webhook_enabled:
+        start_paystack_callback_server()
     logger.info("✅ Paystack setup complete")
     
     logger.info("Setting up asyncio event loop...")
@@ -7728,17 +7803,7 @@ def main():
     logger.info("✅ Event loop ready")
 
     async def post_init(application: Application):
-        await application.bot.set_my_description(
-            "PRIMECHOP - Your Campus Food Delivery Bot\n\n"
-            "Order meals, snacks, and drinks from trusted campus vendors in minutes.\n"
-            "Secure wallet and Paystack payments.\n"
-            "Fast delivery updates to your hall and room.\n\n"
-            "Smart. Reliable. Built for students."
-        )
-        await application.bot.set_my_short_description(
-            "Campus food ordering with secure payments and fast delivery tracking."
-        )
-        await _set_public_bot_commands(application)
+        await _initialize_bot_metadata(application)
 
     request_timeout = 15 if settings.lightweight_mode else 30
     request = HTTPXRequest(
@@ -7879,14 +7944,7 @@ def main():
             settings.webhook_port,
             webhook_path,
         )
-        app.run_webhook(
-            listen=settings.webhook_listen_host,
-            port=settings.webhook_port,
-            url_path=webhook_path.lstrip("/"),
-            webhook_url=webhook_url,
-            allowed_updates=settings.allowed_updates,
-            bootstrap_retries=-1,
-        )
+        asyncio.get_event_loop().run_until_complete(_run_combined_webhook_server(app, webhook_url, webhook_path))
     else:
         logger.info("Starting Telegram bot in polling mode")
         app.run_polling(
