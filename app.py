@@ -1407,6 +1407,16 @@ async def paystack_wallet_callback(request: web.Request) -> web.Response:
             logger.exception("Failed to dispatch paid order from callback for %s", reference)
         return web.Response(text=f"Order payment confirmed for reference {reference}", status=200)
 
+    existing_order = db.get_order_by_payment_ref(reference)
+    if existing_order and (existing_order["status"] or "").strip().lower() == "pending_waiter":
+        try:
+            callback_bot = Bot(token=settings.telegram_bot_token)
+            await _mirror_order_event_to_group(existing_order, event="payment_confirmed", payment_status="confirmed", bot=callback_bot)
+            await _dispatch_paid_order_via_bot(existing_order, callback_bot)
+        except Exception:
+            logger.exception("Failed to re-dispatch already confirmed order from callback for %s", reference)
+        return web.Response(text=f"Order payment already confirmed for reference {reference}", status=200)
+
     return web.Response(text="Payment already processed or not found", status=200)
 
 
