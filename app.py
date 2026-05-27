@@ -6049,7 +6049,7 @@ async def topup(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db.upsert_user(user.id, user.full_name, role=user_role(user.id))
 
     if not context.args:
-        await start_topup_flow(update, context)
+        await update.effective_message.reply_text(format_topup_amount_prompt(), parse_mode="HTML")
         return
 
     try:

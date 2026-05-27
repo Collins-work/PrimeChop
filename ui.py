@@ -748,6 +748,7 @@ def format_topup_amount_prompt() -> str:
     """Prompt for a custom wallet top-up amount."""
     return (
         f"{EMOJI_TOPUP} <b>Enter Top Up Amount</b>\n\n"
+        f"Use <code>/topup &lt;amount&gt;</code> to start a wallet top up.\n"
         f"Send the amount in naira.\n"
         f"Example: <code>3500</code>\n\n"
         f"Use /cancel to exit this flow."
@@ -885,6 +886,7 @@ def format_invalid_amount() -> str:
     return (
         f"{EMOJI_ERROR} <b>Invalid Amount</b>\n\n"
         f"Please enter a positive number.\n"
+        f"<i>Usage: /topup &lt;amount&gt;</i>\n"
         f"<i>Example: /topup 5000</i>"
     )
 
