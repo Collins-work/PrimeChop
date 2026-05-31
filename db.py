@@ -2458,6 +2458,54 @@ class Database:
                 (user_id, limit),
             ).fetchall()
 
+    def purge_admin_mock_wallet_topups(self, admin_ids: list[int]) -> dict[str, int]:
+        """Remove mock-mode wallet top-ups for admin accounts before switching to live mode."""
+        if not admin_ids:
+            return {"users": 0, "transactions": 0, "amount": 0}
+
+        mock_prefix = "https://checkout.paystack.mock/"
+        now = self.now_iso()
+        user_count = 0
+        transaction_count = 0
+        total_amount = 0
+
+        with self.connection() as conn:
+            for admin_id in admin_ids:
+                rows = conn.execute(
+                    """
+                    SELECT id, amount, status
+                    FROM wallet_transactions
+                    WHERE user_id=?
+                      AND payment_link LIKE ?
+                      AND tx_type='topup'
+                    """,
+                    (admin_id, f"{mock_prefix}%"),
+                ).fetchall()
+                if not rows:
+                    continue
+
+                mock_success_amount = sum(int(row["amount"] or 0) for row in rows if (row["status"] or "").lower() == "success")
+                transaction_ids = [int(row["id"]) for row in rows]
+                deleted = conn.execute(
+                    f"DELETE FROM wallet_transactions WHERE id IN ({','.join(['?'] * len(transaction_ids))})",
+                    transaction_ids,
+                )
+                if deleted.rowcount:
+                    transaction_count += int(deleted.rowcount)
+                    total_amount += mock_success_amount
+                    conn.execute(
+                        """
+                        UPDATE users
+                        SET wallet_balance = GREATEST(wallet_balance - ?, 0),
+                            updated_at=?
+                        WHERE user_id=?
+                        """,
+                        (mock_success_amount, now, admin_id),
+                    )
+                    user_count += 1
+
+        return {"users": user_count, "transactions": transaction_count, "amount": total_amount}
+
     def create_order_paid_with_wallet(
         self,
         *,

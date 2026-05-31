@@ -7873,6 +7873,18 @@ def main():
         logger.info("✅ Restored fixed vendor menus: %s", ", ".join(restored_vendors))
     else:
         logger.info("✅ Fixed vendor menus already healthy")
+
+    if settings.paystack_mode == "live":
+        cleanup_result = db.purge_admin_mock_wallet_topups(settings.admin_ids)
+        if cleanup_result["transactions"]:
+            logger.info(
+                "✅ Removed %s mock wallet transaction(s) from %s admin account(s) before live mode; cleared ₦%s",
+                cleanup_result["transactions"],
+                cleanup_result["users"],
+                f"{cleanup_result['amount']:,}",
+            )
+        else:
+            logger.info("✅ No mock wallet top-ups found for admin accounts")
     
     logger.info("Setting up Paystack callback server...")
     if not settings.webhook_enabled:
