@@ -3419,7 +3419,7 @@ def format_waiter_analytics_dashboard(rows: list) -> str:
     total_manual_adjustments = sum(int(row.get("manual_adjustments") or 0) for row in rows)
 
     lines = ["📊 <b>Waiter Analysis</b>", ""]
-    lines.append("Pay Rate: ₦250 per completed order")
+    lines.append("Payout basis: completed/delivered order waiter share + manual adjustments")
     lines.append(f"Total Waiters Tracked: {len(rows)}")
     lines.append(f"Completed Orders: {total_completed}")
     lines.append(f"Manual Adjustments: ₦{total_manual_adjustments:,}")

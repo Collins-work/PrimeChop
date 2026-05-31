@@ -1237,10 +1237,15 @@ class Database:
                     u.user_id,
                     u.full_name,
                     u.waiter_code,
-                    SUM(CASE WHEN o.status='completed' THEN 1 ELSE 0 END) AS completed_orders,
+                    SUM(CASE WHEN o.status IN ('completed', 'delivered') THEN 1 ELSE 0 END) AS completed_orders,
                     SUM(CASE WHEN o.status='claimed' THEN 1 ELSE 0 END) AS active_orders,
                     COALESCE(a.adjustment_total, 0) AS manual_adjustments,
-                    SUM(CASE WHEN o.status='completed' THEN 250 ELSE 0 END) + COALESCE(a.adjustment_total, 0) AS earnings
+                    SUM(
+                        CASE
+                            WHEN o.status IN ('completed', 'delivered') THEN COALESCE(o.waiter_share, 250)
+                            ELSE 0
+                        END
+                    ) + COALESCE(a.adjustment_total, 0) AS earnings
                 FROM users u
                 LEFT JOIN orders o ON o.waiter_id = u.user_id
                 LEFT JOIN (
@@ -1285,7 +1290,7 @@ class Database:
 
     def clear_waiter_earning_adjustments(self) -> tuple[int, int]:
         """
-        Clear all waiter earnings adjustments and reset completed orders to pending.
+        Clear all waiter earnings adjustments and reset finalized waiter orders to pending.
         Returns: (adjustment_records_deleted, completed_orders_reset)
         """
         now = self.now_iso()
@@ -1294,19 +1299,19 @@ class Database:
             row = conn.execute("SELECT COUNT(*) AS total FROM waiter_earning_adjustments").fetchone()
             deleted_count = int(row["total"] or 0)
             
-            # Count completed orders to reset
-            row = conn.execute("SELECT COUNT(*) AS total FROM orders WHERE status='completed'").fetchone()
+            # Count finalized waiter orders to reset
+            row = conn.execute("SELECT COUNT(*) AS total FROM orders WHERE status IN ('completed', 'delivered')").fetchone()
             reset_count = int(row["total"] or 0)
             
             # Delete all adjustment records
             conn.execute("DELETE FROM waiter_earning_adjustments")
             
-            # Reset all completed orders back to pending_waiter (so they don't count as earnings)
+            # Reset finalized orders back to pending_waiter so analytics is cleared.
             conn.execute(
                 """
                 UPDATE orders
                 SET status='pending_waiter', waiter_id=NULL, completed_at=NULL, updated_at=?
-                WHERE status='completed'
+                WHERE status IN ('completed', 'delivered')
                 """,
                 (now,)
             )
