@@ -2166,15 +2166,25 @@ class Database:
             return int(row["total"] or 0)
 
     def clear_order_history(self) -> int:
+        """
+        Clear order history while protecting unattended orders.
+
+        For safety, this method now only removes orders that are completed or delivered
+        (finalized records). This prevents accidental removal of pending or claimed
+        orders when the cleanup flag is enabled. To remove all orders, use the
+        low-level SQL or add an explicit admin action that calls a separate method.
+        """
         if not self._allow_order_history_purge:
             raise PermissionError(
                 "Order history purge is disabled by policy. "
                 "Set ALLOW_ORDER_HISTORY_PURGE=true only when you intentionally need a one-time cleanup."
             )
         with self.connection() as conn:
-            row = conn.execute("SELECT COUNT(*) AS total FROM orders").fetchone()
+            # Only delete finalized orders to avoid losing unattended work-in-progress
+            row = conn.execute("SELECT COUNT(*) AS total FROM orders WHERE status IN ('completed', 'delivered')").fetchone()
             deleted_count = int(row["total"] or 0)
-            conn.execute("DELETE FROM orders")
+            if deleted_count > 0:
+                conn.execute("DELETE FROM orders WHERE status IN ('completed', 'delivered')")
         self._refresh_orders_users_export()
         return deleted_count
 
