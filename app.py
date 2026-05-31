@@ -1061,6 +1061,7 @@ db = Database(
     database_url=settings.database_url,
     timezone_name=settings.bot_timezone,
     allow_order_history_purge=settings.allow_order_history_purge,
+    customer_cart_max_age_hours=settings.customer_cart_max_age_hours,
     waiter_available_orders_max_age_hours=settings.waiter_available_orders_max_age_hours,
     waiter_available_orders_rollover_hours=settings.waiter_available_orders_rollover_hours,
     waiter_active_orders_max_age_hours=settings.waiter_active_orders_max_age_hours,
@@ -1413,6 +1414,8 @@ async def paystack_wallet_callback(request: web.Request) -> web.Response:
             await _dispatch_paid_order_via_bot(order, callback_bot)
         except Exception:
             logger.exception("Failed to dispatch paid order from callback for %s", reference)
+        if str(order.get("checkout_source") or "direct").casefold() == "cart":
+            db.clear_customer_cart_state(int(order["customer_id"]))
         return web.Response(text=f"Order payment confirmed for reference {reference}", status=200)
 
     existing_order = db.get_order_by_payment_ref(reference)
@@ -1423,6 +1426,8 @@ async def paystack_wallet_callback(request: web.Request) -> web.Response:
             await _dispatch_paid_order_via_bot(existing_order, callback_bot)
         except Exception:
             logger.exception("Failed to re-dispatch already confirmed order from callback for %s", reference)
+        if str(existing_order.get("checkout_source") or "direct").casefold() == "cart":
+            db.clear_customer_cart_state(int(existing_order["customer_id"]))
         return web.Response(text=f"Order payment already confirmed for reference {reference}", status=200)
 
     return web.Response(text="Payment already processed or not found", status=200)
@@ -2940,6 +2945,7 @@ async def checkout_payment_callback(update: Update, context: ContextTypes.DEFAUL
                 waiter_share=waiter_share,
                 platform_share=platform_share,
                 wallet_tx_ref=wallet_tx_ref,
+                checkout_source="cart" if pending.get("from_cart") else "direct",
             )
         except Exception as exc:
             logger.exception("Wallet checkout failed while creating order")
@@ -3019,6 +3025,7 @@ async def checkout_payment_callback(update: Update, context: ContextTypes.DEFAUL
                 service_fee_total=service_fee_total,
                 waiter_share=waiter_share,
                 platform_share=platform_share,
+                checkout_source="cart" if pending.get("from_cart") else "direct",
             )
             _audit_order_event(db.get_order(order_id), event="order_created", payment_status="pending")
             pending_order = db.get_order(order_id)

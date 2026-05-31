@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS orders (
     payment_provider TEXT DEFAULT 'korapay',
     payment_tx_ref TEXT,
     payment_link TEXT,
+    checkout_source TEXT DEFAULT 'direct',
     customer_rating INTEGER,
     customer_feedback TEXT,
     rating_submitted_at TIMESTAMPTZ,

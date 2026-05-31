@@ -96,6 +96,7 @@ class Database:
         database_url: str,
         timezone_name: str,
         allow_order_history_purge: bool = False,
+        customer_cart_max_age_hours: int = 24,
         waiter_available_orders_max_age_hours: int = 24,
         waiter_available_orders_rollover_hours: int = 24,
         waiter_active_orders_max_age_hours: int = 48,
@@ -113,6 +114,7 @@ class Database:
         
         self.tz = ZoneInfo(timezone_name)
         self._allow_order_history_purge = bool(allow_order_history_purge)
+        self._customer_cart_max_age_hours = max(1, int(customer_cart_max_age_hours or 24))
         self._waiter_available_orders_max_age_hours = max(1, int(waiter_available_orders_max_age_hours or 24))
         self._waiter_available_orders_rollover_hours = max(0, int(waiter_available_orders_rollover_hours or 24))
         self._waiter_active_orders_max_age_hours = max(1, int(waiter_active_orders_max_age_hours or 48))
@@ -170,11 +172,21 @@ class Database:
     def get_customer_cart_state(self, customer_id: int) -> tuple[dict[int, int], dict[int, str]]:
         with self.connection() as conn:
             row = conn.execute(
-                "SELECT cart_json, cart_notes_json FROM customer_carts WHERE customer_id=?",
+                "SELECT cart_json, cart_notes_json, updated_at FROM customer_carts WHERE customer_id=?",
                 (customer_id,),
             ).fetchone()
         if not row:
             return {}, {}
+
+        updated_at_text = str(row["updated_at"] or "").strip()
+        if updated_at_text:
+            try:
+                updated_at = datetime.fromisoformat(updated_at_text.replace("Z", "+00:00"))
+                if datetime.now(self.tz) - updated_at > timedelta(hours=self._customer_cart_max_age_hours):
+                    self.clear_customer_cart_state(customer_id)
+                    return {}, {}
+            except Exception:
+                pass
 
         try:
             cart = json.loads(str(row["cart_json"] or "{}"))
@@ -943,6 +955,7 @@ class Database:
                     payment_provider TEXT DEFAULT 'paystack',
                     payment_tx_ref TEXT,
                     payment_link TEXT,
+                    checkout_source TEXT DEFAULT 'direct',
                     customer_rating INTEGER,
                     customer_feedback TEXT,
                     rating_submitted_at TEXT,
@@ -962,6 +975,7 @@ class Database:
                 )
                 """
             )
+            conn.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS checkout_source TEXT DEFAULT 'direct'")
             
             conn.execute(
                 """
@@ -1961,6 +1975,7 @@ class Database:
         payment_provider: str = "paystack",
         payment_tx_ref: str | None = None,
         payment_link: str | None = None,
+        checkout_source: str = "direct",
     ) -> int:
         now = self.now_iso()
         with self.connection() as conn:
@@ -1968,9 +1983,9 @@ class Database:
                 """
                 INSERT INTO orders (
                     order_ref, customer_id, item_id, cafeteria_name, amount,
-                    order_details, room_number, delivery_time, hall_name, status, payment_method, payment_provider, payment_tx_ref, payment_link, waiter_id,
+                    order_details, room_number, delivery_time, hall_name, status, payment_method, payment_provider, payment_tx_ref, payment_link, checkout_source, waiter_id,
                     service_fee_total, waiter_share, platform_share, accepted_at, completed_at, eta_minutes, eta_due_at, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?)
                 RETURNING id
                 """,
                 (
@@ -1988,6 +2003,7 @@ class Database:
                     payment_provider,
                     payment_tx_ref,
                     payment_link,
+                    checkout_source,
                     service_fee_total,
                     waiter_share,
                     platform_share,
@@ -2780,6 +2796,7 @@ class Database:
         waiter_share: int,
         platform_share: int,
         wallet_tx_ref: str,
+        checkout_source: str = "direct",
     ) -> Optional[int]:
         now = self.now_iso()
         with self.connection() as conn:
@@ -2798,9 +2815,9 @@ class Database:
                 """
                 INSERT INTO orders (
                     order_ref, customer_id, item_id, cafeteria_name, amount,
-                    order_details, room_number, delivery_time, hall_name, status, payment_method, payment_provider, payment_tx_ref, payment_link, waiter_id,
+                    order_details, room_number, delivery_time, hall_name, status, payment_method, payment_provider, payment_tx_ref, payment_link, checkout_source, waiter_id,
                     service_fee_total, waiter_share, platform_share, accepted_at, completed_at, eta_minutes, eta_due_at, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending_waiter', 'wallet', 'wallet', ?, NULL, NULL, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending_waiter', 'wallet', 'wallet', ?, NULL, ?, NULL, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?)
                 RETURNING id
                 """,
                 (
@@ -2814,6 +2831,7 @@ class Database:
                     delivery_time,
                     hall_name,
                     wallet_tx_ref,
+                    checkout_source,
                     service_fee_total,
                     waiter_share,
                     platform_share,
