@@ -1,4 +1,5 @@
 import csv
+import json
 import re
 import os
 import logging
@@ -139,6 +140,82 @@ class Database:
 
     def now_iso(self) -> str:
         return datetime.now(self.tz).isoformat()
+
+    def _normalize_cart_items(self, cart: Any) -> dict[int, int]:
+        normalized: dict[int, int] = {}
+        if isinstance(cart, dict):
+            for key, qty in cart.items():
+                try:
+                    item_id = int(key)
+                    quantity = int(qty)
+                except (TypeError, ValueError):
+                    continue
+                if quantity > 0:
+                    normalized[item_id] = quantity
+        return normalized
+
+    def _normalize_cart_notes(self, cart_notes: Any) -> dict[int, str]:
+        normalized: dict[int, str] = {}
+        if isinstance(cart_notes, dict):
+            for key, value in cart_notes.items():
+                try:
+                    item_id = int(key)
+                except (TypeError, ValueError):
+                    continue
+                note_text = " ".join(str(value or "").strip().split())[:240]
+                if note_text:
+                    normalized[item_id] = note_text
+        return normalized
+
+    def get_customer_cart_state(self, customer_id: int) -> tuple[dict[int, int], dict[int, str]]:
+        with self.connection() as conn:
+            row = conn.execute(
+                "SELECT cart_json, cart_notes_json FROM customer_carts WHERE customer_id=?",
+                (customer_id,),
+            ).fetchone()
+        if not row:
+            return {}, {}
+
+        try:
+            cart = json.loads(str(row["cart_json"] or "{}"))
+        except Exception:
+            cart = {}
+        try:
+            cart_notes = json.loads(str(row["cart_notes_json"] or "{}"))
+        except Exception:
+            cart_notes = {}
+        return self._normalize_cart_items(cart), self._normalize_cart_notes(cart_notes)
+
+    def set_customer_cart_state(self, customer_id: int, cart: Any, cart_notes: Any) -> None:
+        normalized_cart = self._normalize_cart_items(cart)
+        normalized_notes = self._normalize_cart_notes(cart_notes)
+        if not normalized_cart and not normalized_notes:
+            self.clear_customer_cart_state(customer_id)
+            return
+
+        now = self.now_iso()
+        with self.connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO customer_carts (customer_id, cart_json, cart_notes_json, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(customer_id) DO UPDATE SET
+                    cart_json=excluded.cart_json,
+                    cart_notes_json=excluded.cart_notes_json,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    customer_id,
+                    json.dumps(normalized_cart),
+                    json.dumps(normalized_notes),
+                    now,
+                    now,
+                ),
+            )
+
+    def clear_customer_cart_state(self, customer_id: int) -> None:
+        with self.connection() as conn:
+            conn.execute("DELETE FROM customer_carts WHERE customer_id=?", (customer_id,))
 
     def _extract_gender_from_details(self, details: str) -> str:
         for line in (details or "").splitlines():
@@ -800,6 +877,18 @@ class Database:
                     waiter_gender TEXT,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS customer_carts (
+                    customer_id BIGINT PRIMARY KEY,
+                    cart_json TEXT NOT NULL DEFAULT '{}',
+                    cart_notes_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY (customer_id) REFERENCES users(user_id) ON DELETE CASCADE
                 )
                 """
             )

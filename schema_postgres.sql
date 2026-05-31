@@ -56,6 +56,16 @@ CREATE INDEX IF NOT EXISTS idx_orders_waiter_id ON orders(waiter_id);
 CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
 CREATE INDEX IF NOT EXISTS idx_orders_payment_tx_ref ON orders(payment_tx_ref);
 
+CREATE TABLE IF NOT EXISTS customer_carts (
+    customer_id BIGINT PRIMARY KEY REFERENCES users(user_id) ON DELETE CASCADE,
+    cart_json TEXT NOT NULL DEFAULT '{}',
+    cart_notes_json TEXT NOT NULL DEFAULT '{}',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_customer_carts_updated_at ON customer_carts(updated_at);
+
 CREATE OR REPLACE FUNCTION touch_updated_at()
 RETURNS TRIGGER AS $$
 BEGIN

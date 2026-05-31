@@ -2397,6 +2397,23 @@ def _ensure_order_draft(context: ContextTypes.DEFAULT_TYPE) -> dict:
         context.user_data["order_draft"] = draft
     return draft
 
+
+def _load_customer_cart_state(context: ContextTypes.DEFAULT_TYPE, customer_id: int) -> None:
+    cart, cart_notes = db.get_customer_cart_state(customer_id)
+    context.user_data["cart"] = cart
+    context.user_data["cart_notes"] = cart_notes
+
+
+def _save_customer_cart_state(context: ContextTypes.DEFAULT_TYPE, customer_id: int) -> None:
+    db.set_customer_cart_state(customer_id, context.user_data.get("cart", {}), context.user_data.get("cart_notes", {}))
+
+
+def _clear_customer_cart_state(context: ContextTypes.DEFAULT_TYPE, customer_id: int) -> None:
+    db.clear_customer_cart_state(customer_id)
+    context.user_data.pop("cart", None)
+    context.user_data.pop("cart_notes", None)
+    context.user_data.pop("cart_note_mode", None)
+
 def _get_cart(context: ContextTypes.DEFAULT_TYPE) -> dict[int, int]:
     cart = context.user_data.get("cart")
     if not isinstance(cart, dict):
@@ -2700,6 +2717,7 @@ async def customer_checkout_email_step(update: Update, context: ContextTypes.DEF
 
     next_action = (resume or {}).get("next_action")
     if next_action == "resume_cart_checkout":
+        _load_customer_cart_state(context, user.id)
         cart_draft = _build_cart_checkout_draft(context)
         if not cart_draft:
             await message.reply_text("Your cart is empty.", parse_mode="HTML")
@@ -2947,15 +2965,13 @@ async def checkout_payment_callback(update: Update, context: ContextTypes.DEFAUL
         _audit_order_event(order, event="order_created", payment_status="confirmed")
         await _mirror_order_event_to_group(order, event="order_created", payment_status="confirmed", bot=context.bot)
         context.user_data.pop("pending_checkout", None)
-        if pending.get("from_cart"):
-            context.user_data.pop("cart", None)
-            context.user_data.pop("cart_notes", None)
-            context.user_data.pop("cart_note_mode", None)
         await _edit_or_send_callback_message(
             query,
             "✅ <b>Wallet Payment Successful</b>\n\nYour wallet has been debited and your order is now being dispatched to available waiters.",
             parse_mode="HTML",
         )
+        if pending.get("from_cart"):
+            _clear_customer_cart_state(context, user.id)
         await _dispatch_paid_order(order, context)
         return
 
@@ -3017,10 +3033,6 @@ async def checkout_payment_callback(update: Update, context: ContextTypes.DEFAUL
             )
             return
         context.user_data.pop("pending_checkout", None)
-        if pending.get("from_cart"):
-            context.user_data.pop("cart", None)
-            context.user_data.pop("cart_notes", None)
-            context.user_data.pop("cart_note_mode", None)
 
         order_payment_text = format_order_payment_ready(
             order_ref=requested_order_ref,
@@ -3996,9 +4008,7 @@ async def cart_action_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         return
 
     if action == "clear":
-        context.user_data.pop("cart", None)
-        context.user_data.pop("cart_notes", None)
-        context.user_data.pop("cart_note_mode", None)
+        _clear_customer_cart_state(context, query.from_user.id)
         await _edit_or_send_callback_message(
             query,
             format_empty_cart(),
@@ -4008,6 +4018,7 @@ async def cart_action_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         return
 
     if action == "checkout":
+        _load_customer_cart_state(context, query.from_user.id)
         missing_vendors = _cart_missing_mandatory_plastic_pack_vendors(context)
         if missing_vendors:
             await query.answer(_mandatory_plastic_pack_requirement_text(missing_vendors), show_alert=True)
@@ -4032,6 +4043,7 @@ async def cart_action_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         return
 
     if action == "view":
+        _load_customer_cart_state(context, query.from_user.id)
         lines, total, _ = _cart_lines_and_total(context)
         if not lines:
             await _edit_or_send_callback_message(
@@ -4101,6 +4113,7 @@ async def cart_adjust_quantity_callback(update: Update, context: ContextTypes.DE
         await query.answer("Invalid item.", show_alert=True)
         return
 
+    _load_customer_cart_state(context, query.from_user.id)
     cart = _get_cart(context)
     cart_notes = _get_cart_notes(context)
     current_quantity = int(cart.get(item_id, 0))
@@ -4115,6 +4128,7 @@ async def cart_adjust_quantity_callback(update: Update, context: ContextTypes.DE
             cart[item_id] = new_quantity
     context.user_data["cart"] = cart
     context.user_data["cart_notes"] = cart_notes
+    _save_customer_cart_state(context, query.from_user.id)
 
     if context.user_data.get("cart_note_mode", {}).get("item_id") == item_id and item_id not in cart:
         context.user_data.pop("cart_note_mode", None)
@@ -6965,6 +6979,7 @@ async def catalog_add_current_callback(update: Update, context: ContextTypes.DEF
 
     item_id = int(selection["item_id"])
     quantity = max(1, int(selection.get("quantity") or 1))
+    _load_customer_cart_state(context, query.from_user.id)
     cart_notes = _get_cart_notes(context)
 
     if action == "add_with_note":
@@ -6995,6 +7010,7 @@ async def catalog_add_current_callback(update: Update, context: ContextTypes.DEF
     cart[item_id] = cart.get(item_id, 0) + quantity
     context.user_data["cart"] = cart
     context.user_data["cart_notes"] = cart_notes
+    _save_customer_cart_state(context, query.from_user.id)
 
     vendor_id = selection.get("vendor_id")
     if vendor_id:
@@ -7038,6 +7054,7 @@ async def cart_note_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.effective_message.reply_text("Unable to add note right now. Please select the item again.")
         return
 
+    _load_customer_cart_state(context, update.effective_user.id)
     cart = _get_cart(context)
     cart[item_id] = int(cart.get(item_id, 0)) + quantity
     context.user_data["cart"] = cart
@@ -7046,6 +7063,7 @@ async def cart_note_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cart_notes[item_id] = note_text
     context.user_data["cart_notes"] = cart_notes
     context.user_data.pop("cart_note_mode", None)
+    _save_customer_cart_state(context, update.effective_user.id)
 
     await update.effective_message.reply_text(
         f"✅ Added {quantity} x {item_name} with note to your cart.",
