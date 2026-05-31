@@ -1771,12 +1771,18 @@ def service_fee_split(total: int, mode: str) -> tuple[int, int]:
         return 300, max(0, total - 300)
     if mode == "platform300":
         return max(0, total - 300), 300
-    return total // 2, total - (total // 2)
+    # Default equal split, but cap waiter share to 250 to keep waiter earnings stable
+    waiter_share = total // 2
+    waiter_share = min(waiter_share, 250)
+    return waiter_share, total - waiter_share
 
 
 def calculate_dynamic_service_fee(order_amount: int) -> int:
-    _ = max(0, int(order_amount))
-    return DELIVERY_SERVICE_FEE
+    amount = max(0, int(order_amount))
+    base = DELIVERY_SERVICE_FEE
+    percent = int(round(amount * 0.02))
+    extra = 100
+    return max(0, base + percent + extra)
 
 
 def _deactivate_removed_vendors():
@@ -3110,12 +3116,20 @@ async def _dispatch_paid_order_via_bot(order_row, bot: Bot):
             waiter_gender = _waiter_gender(int(waiter["user_id"]))
             if waiter_gender != required_gender:
                 continue
-        await bot.send_message(
-            chat_id=waiter["user_id"],
-            text=waiter_text,
-            reply_markup=keyboard,
-            parse_mode="HTML",
-        )
+        try:
+            msg = await bot.send_message(
+                chat_id=waiter["user_id"],
+                text=waiter_text,
+                reply_markup=keyboard,
+                parse_mode="HTML",
+            )
+            try:
+                # Record the sent message so it can be edited/removed when order state changes
+                db.record_waiter_order_message(int(order["id"]), int(waiter["user_id"]), int(msg.chat_id), int(msg.message_id))
+            except Exception:
+                logger.exception("Failed to record waiter order message mapping")
+        except Exception:
+            logger.exception("Failed to send order alert to waiter %s", waiter.get("user_id"))
 
 
 async def _dispatch_paid_order(order_row, context: ContextTypes.DEFAULT_TYPE):
@@ -7255,6 +7269,33 @@ async def claim_order_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             text=format_order_claimed(order_id, waiter_name, eta_minutes=eta_minutes, eta_due_at=eta_due_text),
             parse_mode="HTML",
         )
+
+        # Edit or remove the claim buttons/messages previously sent to other waiters
+        try:
+            recorded_msgs = db.list_waiter_order_messages(order_id)
+            order_ref_display = order["order_ref"] or str(order_id)
+            claimed_text = (
+                f"ℹ️ <b>Order #{order_ref_display} Claimed</b>\n\n"
+                f"This order has been claimed by {waiter_name} and is no longer available for claiming."
+            )
+            for rec in recorded_msgs:
+                try:
+                    wuid = int(rec.get("waiter_user_id") or 0)
+                    chat_id = int(rec.get("chat_id") or 0)
+                    message_id = int(rec.get("message_id") or 0)
+                    if wuid == waiter_user_id:
+                        # Skip the waiter who just claimed (they get their own UI)
+                        continue
+                    await context.bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=claimed_text, parse_mode="HTML")
+                except Exception:
+                    logger.exception("Unable to update waiter alert message for order %s", order_id)
+        except Exception:
+            logger.exception("Failed to process recorded waiter messages for order %s", order_id)
+        finally:
+            try:
+                db.clear_waiter_order_messages(order_id)
+            except Exception:
+                logger.exception("Failed to clear waiter order message records for order %s", order_id)
 
         await query.edit_message_text(
             format_waiter_claimed_order(

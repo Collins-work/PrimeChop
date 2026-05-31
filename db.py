@@ -629,6 +629,56 @@ class Database:
                     [
                         int(row["id"] or 0),
                         row["order_ref"] or "",
+
+    # ------------------ Waiter message tracking ------------------
+    def _ensure_waiter_order_messages_table(self):
+        with self.connection() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS waiter_order_messages (
+                    id BIGSERIAL PRIMARY KEY,
+                    order_id BIGINT NOT NULL,
+                    waiter_user_id BIGINT NOT NULL,
+                    chat_id BIGINT NOT NULL,
+                    message_id BIGINT NOT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """
+            )
+
+    def record_waiter_order_message(self, order_id: int, waiter_user_id: int, chat_id: int, message_id: int):
+        """Store mapping between an order and the waiter-facing Telegram message sent."""
+        try:
+            self._ensure_waiter_order_messages_table()
+            with self.connection() as conn:
+                conn.execute(
+                    "INSERT INTO waiter_order_messages (order_id, waiter_user_id, chat_id, message_id) VALUES (?, ?, ?, ?)",
+                    (order_id, waiter_user_id, chat_id, message_id),
+                )
+        except Exception:
+            logger.exception("Failed to record waiter order message for order %s", order_id)
+
+    def list_waiter_order_messages(self, order_id: int) -> list[dict]:
+        """Return list of recorded waiter order messages for an order."""
+        try:
+            self._ensure_waiter_order_messages_table()
+            with self.connection() as conn:
+                rows = conn.execute(
+                    "SELECT id, order_id, waiter_user_id, chat_id, message_id, created_at FROM waiter_order_messages WHERE order_id=?",
+                    (order_id,),
+                ).fetchall()
+            return rows
+        except Exception:
+            logger.exception("Failed to list waiter order messages for order %s", order_id)
+            return []
+
+    def clear_waiter_order_messages(self, order_id: int):
+        try:
+            self._ensure_waiter_order_messages_table()
+            with self.connection() as conn:
+                conn.execute("DELETE FROM waiter_order_messages WHERE order_id=?", (order_id,))
+        except Exception:
+            logger.exception("Failed to clear waiter order messages for order %s", order_id)
                         created_at_text[:10] if created_at_text else "",
                         row["item_name"] or "",
                         row["order_details"] or "",
