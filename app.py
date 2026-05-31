@@ -1167,9 +1167,17 @@ def _format_order_event_log_message(order_row, event: str, payment_status: str) 
 
 
 async def _mirror_order_event_to_group(order_row, event: str, payment_status: str, bot: Bot):
+    """Mirror only high-value order lifecycle events to reduce group message spam."""
     group_chat_id = int(settings.order_log_group_chat_id or 0)
     if not order_row or not group_chat_id:
         return
+    
+    # Only mirror key lifecycle events; skip intermediate payment confirmations
+    # (order_created already indicates successful payment)
+    important_events = {"order_created", "order_claimed", "order_completed", "order_abandoned"}
+    if event not in important_events:
+        return
+    
     try:
         await bot.send_message(
             chat_id=group_chat_id,
@@ -3302,16 +3310,52 @@ def waiter_portal_keyboard() -> InlineKeyboardMarkup:
 def admin_waiter_management_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
-            [InlineKeyboardButton("✅ Approve Waiters", callback_data="adminwm:approve_waiters")],
-            [InlineKeyboardButton("🎭 Login as Waiter", callback_data="adminwm:impersonate_waiter:0")],
-            [InlineKeyboardButton("🔍 Search Waiter Details", callback_data="adminwm:search_waiter_details")],
-            [InlineKeyboardButton("❌ Deactivate Waiter", callback_data="adminwm:deactivate_waiter")],
-            [InlineKeyboardButton("🚻 Set Waiter Gender", callback_data="adminwm:set_gender")],
-            [InlineKeyboardButton("💵 Manual Earnings Correction", callback_data="adminwm:manual_earnings")],
-            [InlineKeyboardButton("📊 Waiter Performance", callback_data="adminwm:performance")],
-            [InlineKeyboardButton("👥 All Waiters", callback_data="adminwm:all_waiters")],
+            [InlineKeyboardButton("✅ Waiter Approval", callback_data="adminwm:approval_menu")],
+            [InlineKeyboardButton("📊 Analytics & Earnings", callback_data="adminwm:analytics_menu")],
+            [InlineKeyboardButton("👤 Account Management", callback_data="adminwm:accounts_menu")],
+            [InlineKeyboardButton("👥 View Waiters", callback_data="adminwm:view_menu")],
             [InlineKeyboardButton("🚪 Exit Waiter Session", callback_data="adminwm:impersonate_clear")],
             [InlineKeyboardButton("🔙 Back to Admin Home", callback_data="admin:menu")],
+        ]
+    )
+
+
+def admin_waiter_approval_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("✅ Approve Waiters", callback_data="adminwm:approve_waiters")],
+            [InlineKeyboardButton("🔙 Back to Waiter Management", callback_data="adminwm:menu")],
+        ]
+    )
+
+
+def admin_waiter_analytics_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("📊 Waiter Performance", callback_data="adminwm:performance")],
+            [InlineKeyboardButton("💵 Manual Earnings Correction", callback_data="adminwm:manual_earnings")],
+            [InlineKeyboardButton("🔙 Back to Waiter Management", callback_data="adminwm:menu")],
+        ]
+    )
+
+
+def admin_waiter_accounts_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("🎭 Login as Waiter", callback_data="adminwm:impersonate_waiter:0")],
+            [InlineKeyboardButton("🚻 Set Waiter Gender", callback_data="adminwm:set_gender")],
+            [InlineKeyboardButton("❌ Deactivate Waiter", callback_data="adminwm:deactivate_waiter")],
+            [InlineKeyboardButton("🔙 Back to Waiter Management", callback_data="adminwm:menu")],
+        ]
+    )
+
+
+def admin_waiter_view_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("👥 All Waiters", callback_data="adminwm:all_waiters")],
+            [InlineKeyboardButton("🔍 Search Waiter Details", callback_data="adminwm:search_waiter_details")],
+            [InlineKeyboardButton("🔙 Back to Waiter Management", callback_data="adminwm:menu")],
         ]
     )
 
@@ -4424,6 +4468,42 @@ async def admin_waiter_management_callback(update: Update, context: ContextTypes
         )
         return
 
+    if action == "approval_menu":
+        await _edit_or_send_callback_message(
+            query,
+            text="✅ <b>Waiter Approval</b>\n\nManage waiter registration requests.",
+            parse_mode="HTML",
+            reply_markup=admin_waiter_approval_keyboard(),
+        )
+        return
+
+    if action == "analytics_menu":
+        await _edit_or_send_callback_message(
+            query,
+            text="📊 <b>Analytics & Earnings</b>\n\nView performance and manage earnings adjustments.",
+            parse_mode="HTML",
+            reply_markup=admin_waiter_analytics_keyboard(),
+        )
+        return
+
+    if action == "accounts_menu":
+        await _edit_or_send_callback_message(
+            query,
+            text="👤 <b>Account Management</b>\n\nManage waiter accounts and login sessions.",
+            parse_mode="HTML",
+            reply_markup=admin_waiter_accounts_keyboard(),
+        )
+        return
+
+    if action == "view_menu":
+        await _edit_or_send_callback_message(
+            query,
+            text="👥 <b>View Waiters</b>\n\nSearch and view waiter information.",
+            parse_mode="HTML",
+            reply_markup=admin_waiter_view_keyboard(),
+        )
+        return
+
     if action == "impersonate_waiter":
         page = 0
         if len(parts) == 3:
@@ -4644,15 +4724,6 @@ async def waiters_db(update: Update, context: ContextTypes.DEFAULT_TYPE):
         verified = "verified" if row["waiter_verified"] else "unverified"
         gender = (row["waiter_gender"] or "unspecified").strip().lower()
         lines.append(f"• {code} - {row['full_name']} (ID: {row['user_id']}) - {status}, {verified}, {gender}")
-
-    lines.extend(
-        [
-            "",
-            "Human-readable exports:",
-            "• human_readable/waiter_registry.csv",
-            "• human_readable/orders_users_tracker.csv",
-        ]
-    )
 
     await update.effective_message.reply_text("\n".join(lines), parse_mode="HTML")
 
