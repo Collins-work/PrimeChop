@@ -718,6 +718,33 @@ class Database:
                     [
                         int(row["id"] or 0),
                         row["order_ref"] or "",
+                        created_at_text[:10] if created_at_text else "",
+                        row["item_name"] or "",
+                        row["order_details"] or "",
+                        int(row["amount"] or 0),
+                        int(row["service_fee_total"] or 0),
+                        int(row["waiter_share"] or 0),
+                        int(row["platform_share"] or 0),
+                        row["status"] or "",
+                        int(row["customer_id"] or 0),
+                        row["customer_name"] or "",
+                        int(row["waiter_id"] or 0) if row["waiter_id"] is not None else "",
+                        row["waiter_name"] or "",
+                        row["waiter_code"] or "",
+                        row["hall_name"] or "",
+                        row["room_number"] or "",
+                        row["payment_method"] or "",
+                        row["payment_provider"] or "",
+                        row["payment_tx_ref"] or "",
+                        created_at_text,
+                        _text(row["accepted_at"]),
+                        _text(row["completed_at"]),
+                        int(row["eta_minutes"] or 0) if row["eta_minutes"] is not None else "",
+                        _text(row["eta_due_at"]),
+                    ]
+                )
+
+        return export_path
 
     # ------------------ Waiter message tracking ------------------
     def _ensure_waiter_order_messages_table(self):
@@ -768,33 +795,6 @@ class Database:
                 conn.execute("DELETE FROM waiter_order_messages WHERE order_id=?", (order_id,))
         except Exception:
             logger.exception("Failed to clear waiter order messages for order %s", order_id)
-                        created_at_text[:10] if created_at_text else "",
-                        row["item_name"] or "",
-                        row["order_details"] or "",
-                        int(row["amount"] or 0),
-                        int(row["service_fee_total"] or 0),
-                        int(row["waiter_share"] or 0),
-                        int(row["platform_share"] or 0),
-                        row["status"] or "",
-                        int(row["customer_id"] or 0),
-                        row["customer_name"] or "",
-                        int(row["waiter_id"] or 0) if row["waiter_id"] is not None else "",
-                        row["waiter_name"] or "",
-                        row["waiter_code"] or "",
-                        row["hall_name"] or "",
-                        row["room_number"] or "",
-                        row["payment_method"] or "",
-                        row["payment_provider"] or "",
-                        row["payment_tx_ref"] or "",
-                        created_at_text,
-                        _text(row["accepted_at"]),
-                        _text(row["completed_at"]),
-                        int(row["eta_minutes"] or 0) if row["eta_minutes"] is not None else "",
-                        _text(row["eta_due_at"]),
-                    ]
-                )
-
-        return export_path
 
     def _normalize_vendor_name(self, name: str) -> str:
         text = (name or "").strip()
