@@ -6064,7 +6064,7 @@ async def clear_orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.effective_message.reply_text(str(exc))
         return
     await update.effective_message.reply_text(
-        f"✅ Order history cleared. Deleted {deleted_count} orders.",
+        f"✅ Order tracker cleared. Removed {deleted_count} rows from the tracker (database records unchanged).",
         reply_markup=admin_quick_actions_keyboard(),
     )
 

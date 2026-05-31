@@ -2186,19 +2186,138 @@ class Database:
         orders when the cleanup flag is enabled. To remove all orders, use the
         low-level SQL or add an explicit admin action that calls a separate method.
         """
+        """
+        Clear the human-readable order tracker while protecting active orders.
+
+        Instead of deleting rows from the main `orders` table (which would affect
+        accounting and waiter earnings), this method rewrites the exported
+        `human_readable/orders_users_tracker.csv` file to remove historical
+        orders while keeping orders for the current day.
+
+        Returns the number of tracker rows removed. The database is not modified.
+        """
         if not self._allow_order_history_purge:
             raise PermissionError(
                 "Order history purge is disabled by policy. "
                 "Set ALLOW_ORDER_HISTORY_PURGE=true only when you intentionally need a one-time cleanup."
             )
+
+        # Fetch the same joined rows used for the human-readable export.
         with self.connection() as conn:
-            # Only delete finalized orders to avoid losing unattended work-in-progress
-            row = conn.execute("SELECT COUNT(*) AS total FROM orders WHERE status IN ('completed', 'delivered')").fetchone()
-            deleted_count = int(row["total"] or 0)
-            if deleted_count > 0:
-                conn.execute("DELETE FROM orders WHERE status IN ('completed', 'delivered')")
-        self._refresh_orders_users_export()
-        return deleted_count
+            rows = conn.execute(
+                """
+                SELECT
+                    o.id,
+                    o.order_ref,
+                    o.order_details,
+                    o.amount,
+                    o.service_fee_total,
+                    o.waiter_share,
+                    o.platform_share,
+                    o.status,
+                    o.hall_name,
+                    o.room_number,
+                    o.payment_method,
+                    o.payment_provider,
+                    o.payment_tx_ref,
+                    o.created_at,
+                    o.accepted_at,
+                    o.completed_at,
+                    o.eta_minutes,
+                    o.eta_due_at,
+                    c.user_id AS customer_id,
+                    c.full_name AS customer_name,
+                    w.user_id AS waiter_id,
+                    w.full_name AS waiter_name,
+                    w.waiter_code AS waiter_code,
+                    m.name AS item_name
+                FROM orders o
+                LEFT JOIN users c ON c.user_id = o.customer_id
+                LEFT JOIN users w ON w.user_id = o.waiter_id
+                LEFT JOIN menu_items m ON m.id = o.item_id
+                ORDER BY o.id DESC
+                """
+            ).fetchall()
+
+        total = len(rows)
+        today_str = datetime.now(self.tz).date().isoformat()
+
+        # Keep only orders created today (do not modify DB so waiter earnings remain intact).
+        kept = []
+        for row in rows:
+            created = (row["created_at"] or "")
+            created_date = created[:10] if created else ""
+            if created_date == today_str:
+                kept.append(row)
+
+        removed_count = total - len(kept)
+
+        # Re-write the human-readable export with only the kept rows.
+        try:
+            self._human_data_dir.mkdir(parents=True, exist_ok=True)
+            with self._orders_users_export_path.open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.writer(handle)
+                writer.writerow(
+                    [
+                        "order_id",
+                        "order_ref",
+                        "item_name",
+                        "order_details",
+                        "amount",
+                        "service_fee_total",
+                        "waiter_share",
+                        "platform_share",
+                        "status",
+                        "customer_id",
+                        "customer_name",
+                        "waiter_id",
+                        "waiter_name",
+                        "waiter_code",
+                        "hall_name",
+                        "room_number",
+                        "payment_method",
+                        "payment_provider",
+                        "payment_tx_ref",
+                        "created_at",
+                        "accepted_at",
+                        "completed_at",
+                        "eta_minutes",
+                        "eta_due_at",
+                    ]
+                )
+                for row in kept:
+                    writer.writerow(
+                        [
+                            int(row["id"] or 0),
+                            row["order_ref"] or "",
+                            row["item_name"] or "",
+                            row["order_details"] or "",
+                            int(row["amount"] or 0),
+                            int(row["service_fee_total"] or 0),
+                            int(row["waiter_share"] or 0),
+                            int(row["platform_share"] or 0),
+                            row["status"] or "",
+                            int(row["customer_id"] or 0),
+                            row["customer_name"] or "",
+                            int(row["waiter_id"] or 0) if row["waiter_id"] is not None else "",
+                            row["waiter_name"] or "",
+                            row["waiter_code"] or "",
+                            row["hall_name"] or "",
+                            row["room_number"] or "",
+                            row["payment_method"] or "",
+                            row["payment_provider"] or "",
+                            row["payment_tx_ref"] or "",
+                            row["created_at"] or "",
+                            row["accepted_at"] or "",
+                            row["completed_at"] or "",
+                            int(row["eta_minutes"] or 0) if row["eta_minutes"] is not None else "",
+                            row["eta_due_at"] or "",
+                        ]
+                    )
+        except Exception as exc:
+            logger.warning("Failed to rewrite orders tracker: %s", exc)
+
+        return removed_count
 
     def mark_order_payment_success(self, tx_ref: str) -> Optional[sqlite3.Row]:
         now = self.now_iso()
