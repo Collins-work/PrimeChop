@@ -7837,6 +7837,24 @@ def main():
         .build()
     )
 
+    # Register order mirror sender so DB-level changes can be mirrored to Telegram
+    try:
+        from services import order_mirror
+
+        async def _mirror_sender(order_id: int, event: str = "order_updated", payment_status: str = ""):
+            # Retrieve latest order state synchronously from DB and mirror it
+            order = db.get_order(order_id)
+            if not order:
+                return
+            try:
+                await _mirror_order_event_to_group(order, event=event, payment_status=payment_status, bot=app.bot)
+            except Exception:
+                logger.exception("Order mirror sender failed for order %s", order_id)
+
+        order_mirror.register_sender(_mirror_sender)
+    except Exception:
+        logger.exception("Failed to register order mirror sender")
+
     add_item_handler = ConversationHandler(
         entry_points=[
             CommandHandler("additem", additem_start),

@@ -532,6 +532,13 @@ class Database:
         """
         _ = order_id
         self._refresh_orders_users_export()
+        try:
+            # Notify optional Telegram mirror service (non-blocking)
+            from services import order_mirror
+
+            order_mirror.notify(order_id)
+        except Exception:
+            logger.exception("Failed to notify order mirror for order %s", order_id)
 
     def refresh_human_readable_exports(self):
         if not self._human_exports_enabled:
