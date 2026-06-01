@@ -1175,8 +1175,15 @@ async def _mirror_order_event_to_group(order_row, event: str, payment_status: st
     if not order_row or not group_chat_id:
         return
     
-    # Mirror key lifecycle events: created, payment confirmed, claimed, and completed
-    important_events = {"order_created", "payment_confirmed", "order_claimed", "order_completed", "order_abandoned"}
+    # Mirror key lifecycle events: created, updated, payment confirmed, claimed, and completed
+    important_events = {
+        "order_created",
+        "order_updated",
+        "payment_confirmed",
+        "order_claimed",
+        "order_completed",
+        "order_abandoned",
+    }
     if event not in important_events:
         return
     
