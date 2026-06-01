@@ -1175,9 +1175,8 @@ async def _mirror_order_event_to_group(order_row, event: str, payment_status: st
     if not order_row or not group_chat_id:
         return
     
-    # Only mirror key lifecycle events; skip intermediate payment confirmations
-    # (order_created already indicates successful payment)
-    important_events = {"order_created", "order_claimed", "order_completed", "order_abandoned"}
+    # Mirror key lifecycle events: created, payment confirmed, claimed, and completed
+    important_events = {"order_created", "payment_confirmed", "order_claimed", "order_completed", "order_abandoned"}
     if event not in important_events:
         return
     
