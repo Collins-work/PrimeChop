@@ -1140,6 +1140,7 @@ def _format_order_event_log_message(order_row, event: str, payment_status: str) 
     item = db.get_menu_item(order_row["item_id"]) if int(order_row["item_id"] or 0) > 0 else None
 
     customer_name = html.escape(str(customer["full_name"] if customer else "Unknown customer"), quote=False)
+    customer_phone = html.escape(str(customer["phone"] if customer and customer["phone"] else "N/A"), quote=False)
     waiter_name = html.escape(str(waiter["full_name"] if waiter else "Unassigned"), quote=False)
     item_name = html.escape(str(item["name"] if item else (order_row["order_details"] or f"Item #{order_row['item_id']}")), quote=False)
     vendor_name = html.escape(str(order_row["cafeteria_name"] or settings.cafeteria_name), quote=False)
@@ -1156,6 +1157,7 @@ def _format_order_event_log_message(order_row, event: str, payment_status: str) 
         f"<b>Payment:</b> {html.escape(payment_status)} ({html.escape(provider)})\n"
         f"<b>Amount:</b> ₦{int(order_row['amount'] or 0):,}\n"
         f"<b>Customer:</b> {customer_name} ({customer_id})\n"
+        f"<b>Customer Phone:</b> {customer_phone}\n"
         f"<b>Waiter:</b> {waiter_name}"
         + (f" ({waiter_id})" if waiter_id else "")
         + "\n"
@@ -6416,45 +6418,37 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.effective_message.reply_text("No users found to broadcast to yet.")
         return
 
-    sent_count = 0
-    failed_count = 0
-    for chat_id in chat_ids:
-        # Build feedback keyboard
-        feedback_keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("💬 Send Feedback", callback_data=f"broadcast:feedback:{int(chat_id)}")],
-        ])
-        
-        if photo_to_broadcast:
-            sent = await _safe_send_photo(
-                context.bot,
-                chat_id=int(chat_id),
-                photo=photo_to_broadcast,
-                caption=message_text or None,
-                parse_mode=None,
-                reply_markup=feedback_keyboard,
-                log_context="broadcast_photo",
-            )
-        else:
-            sent = await _safe_send_message(
-                context.bot,
-                chat_id=int(chat_id),
-                text=message_text,
-                parse_mode=None,
-                reply_markup=feedback_keyboard,
-                log_context="broadcast",
-            )
-        if sent:
-            sent_count += 1
-        else:
-            failed_count += 1
-        await asyncio.sleep(0.05)
+    pending_broadcast = {
+        "message_text": message_text,
+        "photo_to_broadcast": photo_to_broadcast,
+        "chat_ids": [int(chat_id) for chat_id in chat_ids],
+    }
+    context.user_data["pending_broadcast"] = pending_broadcast
+
+    preview_buttons = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ Confirm broadcast", callback_data="broadcast:confirm"),
+            InlineKeyboardButton("❌ Cancel", callback_data="broadcast:cancel"),
+        ]
+    ])
+
+    if photo_to_broadcast:
+        await context.bot.send_photo(
+            chat_id=user.id,
+            photo=photo_to_broadcast,
+            caption=(message_text or "") + f"\n\nPreview only. Press Confirm to send to {len(chat_ids)} users or Cancel to abort.",
+            parse_mode=None,
+        )
+
+    preview_text = (
+        "Broadcast preview. This message will be sent to all users only after you confirm.\n\n"
+        f"Recipients: {len(chat_ids)}\n"
+        f"Message:\n{message_text or '<photo only broadcast>'}"
+    )
 
     await update.effective_message.reply_text(
-        (
-            "Broadcast complete.\n"
-            f"Delivered: {sent_count}\n"
-            f"Skipped/failed: {failed_count}"
-        )
+        preview_text,
+        reply_markup=preview_buttons,
     )
 
 
@@ -7506,6 +7500,83 @@ async def broadcast_feedback_callback(update: Update, context: ContextTypes.DEFA
     )
 
 
+async def broadcast_confirmation_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    user = query.from_user
+    if not is_admin(user.id) and not has_super_admin_access(user.id, context):
+        await query.edit_message_text(format_unauthorized(), parse_mode="HTML")
+        return
+
+    pending = context.user_data.pop("pending_broadcast", None)
+    if not pending:
+        await query.edit_message_text(
+            "No pending broadcast was found. Please send /broadcast again.",
+        )
+        return
+
+    if query.data == "broadcast:cancel":
+        await query.edit_message_text(
+            "Broadcast canceled. No messages were sent.",
+        )
+        return
+
+    if query.data != "broadcast:confirm":
+        await query.edit_message_text(
+            "Unknown broadcast action.",
+        )
+        return
+
+    message_text = pending.get("message_text", "")
+    photo_to_broadcast = pending.get("photo_to_broadcast")
+    chat_ids = pending.get("chat_ids", [])
+
+    await query.edit_message_text(
+        f"Broadcast confirmed. Sending to {len(chat_ids)} users...",
+    )
+
+    sent_count = 0
+    failed_count = 0
+    for chat_id in chat_ids:
+        # Build feedback keyboard
+        feedback_keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("💬 Send Feedback", callback_data=f"broadcast:feedback:{int(chat_id)}")],
+        ])
+
+        if photo_to_broadcast:
+            sent = await _safe_send_photo(
+                context.bot,
+                chat_id=int(chat_id),
+                photo=photo_to_broadcast,
+                caption=message_text or None,
+                parse_mode=None,
+                log_context="broadcast_photo",
+            )
+        else:
+            sent = await _safe_send_message(
+                context.bot,
+                chat_id=int(chat_id),
+                text=message_text,
+                parse_mode=None,
+                reply_markup=feedback_keyboard,
+                log_context="broadcast",
+            )
+        if sent:
+            sent_count += 1
+        else:
+            failed_count += 1
+        await asyncio.sleep(0.05)
+
+    await query.edit_message_text(
+        (
+            "Broadcast complete.\n"
+            f"Delivered: {sent_count}\n"
+            f"Skipped/failed: {failed_count}"
+        )
+    )
+
+
 async def customer_feedback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle customer message submission for feedback."""
     user = update.effective_user
@@ -8096,6 +8167,7 @@ def main():
     app.add_handler(CallbackQueryHandler(waiter_abandon_callback, pattern=r"^abandon_claim:\d+$"))
     app.add_handler(CallbackQueryHandler(order_rating_callback, pattern=r"^rate:\d+:[1-5]$"))
     app.add_handler(CallbackQueryHandler(broadcast_feedback_callback, pattern=r"^broadcast:feedback:\d+$"))
+    app.add_handler(CallbackQueryHandler(broadcast_confirmation_callback, pattern=r"^broadcast:(confirm|cancel)$"))
     app.add_handler(CallbackQueryHandler(customer_message_callback, pattern=r"^cmsg:.*$"))
     app.add_handler(CallbackQueryHandler(mock_payment_confirm_callback, pattern=r"^payconfirm:(topup|order):[A-Za-z0-9_]+$"))
     app.add_handler(CallbackQueryHandler(topup_preset_callback, pattern=r"^topup:\d+$"))
