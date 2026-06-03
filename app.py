@@ -1427,18 +1427,84 @@ async def paystack_wallet_callback(request: web.Request) -> web.Response:
         return web.Response(text=f"Order payment confirmed for reference {reference}", status=200)
 
     existing_order = db.get_order_by_payment_ref(reference)
-    if existing_order and (existing_order["status"] or "").strip().lower() == "pending_waiter":
-        try:
-            callback_bot = Bot(token=settings.telegram_bot_token)
-            await _mirror_order_event_to_group(existing_order, event="payment_confirmed", payment_status="confirmed", bot=callback_bot)
-            await _dispatch_paid_order_via_bot(existing_order, callback_bot)
-        except Exception:
-            logger.exception("Failed to re-dispatch already confirmed order from callback for %s", reference)
-        if str(existing_order.get("checkout_source") or "direct").casefold() == "cart":
-            db.clear_customer_cart_state(int(existing_order["customer_id"]))
-        return web.Response(text=f"Order payment already confirmed for reference {reference}", status=200)
+    if existing_order:
+        existing_status = (existing_order["status"] or "").strip().lower()
+        if existing_status == "pending_waiter":
+            try:
+                callback_bot = Bot(token=settings.telegram_bot_token)
+                await _mirror_order_event_to_group(existing_order, event="payment_confirmed", payment_status="confirmed", bot=callback_bot)
+                await _dispatch_paid_order_via_bot(existing_order, callback_bot)
+            except Exception:
+                logger.exception("Failed to re-dispatch already confirmed order from callback for %s", reference)
+            if str(existing_order.get("checkout_source") or "direct").casefold() == "cart":
+                db.clear_customer_cart_state(int(existing_order["customer_id"]))
+            return web.Response(text=f"Order payment already confirmed for reference {reference}", status=200)
+
+        if existing_status == "pending_payment":
+            order = db.mark_order_payment_success(reference)
+            if not order:
+                order = db.mark_order_payment_success_by_order_ref(reference)
+            if order:
+                _audit_order_event(order, event="payment_confirmed", payment_status="confirmed")
+                try:
+                    callback_bot = Bot(token=settings.telegram_bot_token)
+                    await _mirror_order_event_to_group(order, event="payment_confirmed", payment_status="confirmed", bot=callback_bot)
+                    await _dispatch_paid_order_via_bot(order, callback_bot)
+                except Exception:
+                    logger.exception("Failed to dispatch late-confirmed paid order from callback for %s", reference)
+                if str(order.get("checkout_source") or "direct").casefold() == "cart":
+                    db.clear_customer_cart_state(int(order["customer_id"]))
+                return web.Response(text=f"Order payment confirmed for reference {reference}", status=200)
 
     return web.Response(text="Payment already processed or not found", status=200)
+
+
+async def _reconcile_pending_paystack_orders() -> None:
+    """Verify any pending-payment Paystack orders and confirm them automatically."""
+    if settings.paystack_mode != "live":
+        return
+    try:
+        # Only verify orders that have been pending for a short while to avoid
+        # racing with the normal callback flow.
+        from datetime import datetime, timedelta
+
+        cutoff = datetime.now(db.tz) - timedelta(minutes=10)
+        rows = db.list_pending_payment_orders(older_than_iso=cutoff.isoformat(), limit=200)
+        if not rows:
+            return
+
+        logger.info("Reconciling %s pending_payment orders with Paystack", len(rows))
+        for order in rows:
+            tx_ref = str(order.get("payment_tx_ref") or "").strip()
+            if not tx_ref:
+                continue
+            try:
+                verification = await payments.verify_payment(tx_ref)
+            except Exception:
+                logger.warning("Paystack verification failed while reconciling %s", tx_ref, exc_info=True)
+                continue
+
+            if not _is_paystack_success(verification if isinstance(verification, dict) else {}, {}):
+                continue
+
+            confirmed_order = db.mark_order_payment_success(tx_ref)
+            if not confirmed_order:
+                confirmed_order = db.mark_order_payment_success_by_order_ref(tx_ref)
+            if not confirmed_order:
+                logger.warning("Reconciliation found successful Paystack payment but failed to update order %s", tx_ref)
+                continue
+
+            _audit_order_event(confirmed_order, event="payment_confirmed", payment_status="confirmed")
+            try:
+                callback_bot = Bot(token=settings.telegram_bot_token)
+                await _mirror_order_event_to_group(confirmed_order, event="payment_confirmed", payment_status="confirmed", bot=callback_bot)
+                await _dispatch_paid_order_via_bot(confirmed_order, callback_bot)
+            except Exception:
+                logger.exception("Failed to dispatch reconciled order %s", tx_ref)
+            if str(confirmed_order.get("checkout_source") or "direct").casefold() == "cart":
+                db.clear_customer_cart_state(int(confirmed_order["customer_id"]))
+    except Exception:
+        logger.exception("Pending Paystack order reconciliation failed")
 
 
 def start_paystack_callback_server():
@@ -8040,6 +8106,7 @@ def main():
 
     async def post_init(application: Application):
         await _initialize_bot_metadata(application)
+        asyncio.create_task(_reconcile_pending_paystack_orders())
 
     request_timeout = 15 if settings.lightweight_mode else 30
     request = HTTPXRequest(

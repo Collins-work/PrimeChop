@@ -2585,6 +2585,31 @@ class Database:
         self._mirror_order_by_id(int(order["id"]))
         return updated
 
+    def list_pending_payment_orders(self, older_than_iso: str | None = None, limit: int = 100) -> list[sqlite3.Row]:
+        with self.connection() as conn:
+            if older_than_iso:
+                rows = conn.execute(
+                    """
+                    SELECT * FROM orders
+                    WHERE status='pending_payment'
+                      AND COALESCE(created_at, '') <= ?
+                    ORDER BY id ASC
+                    LIMIT ?
+                    """,
+                    (older_than_iso, limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT * FROM orders
+                    WHERE status='pending_payment'
+                    ORDER BY id ASC
+                    LIMIT ?
+                    """,
+                    (limit,),
+                ).fetchall()
+        return rows
+
     def claim_order(self, order_id: int, waiter_id: int, eta_minutes: int | None = None) -> bool:
         now = self.now_iso()
         eta = max(5, int(eta_minutes or 20))
