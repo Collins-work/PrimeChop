@@ -2539,7 +2539,7 @@ def _get_item_selection(context: ContextTypes.DEFAULT_TYPE) -> dict:
 def _build_item_selection_text(item_name: str, price: int, quantity: int, vendor_name: str) -> str:
     subtotal = price * quantity
     requirement_note = ""
-    if vendor_name in MANDATORY_PLASTIC_PACK_VENDORS and item_name.casefold() != MANDATORY_PLASTIC_PACK_ITEM_NAME.casefold():
+    if _item_requires_mandatory_plastic_pack(vendor_name, item_name):
         requirement_note = (
             "\n\n⚠️ <b>Mandatory item:</b> Add <b>Plastic pack</b> from this vendor before checkout."
         )
@@ -2605,11 +2605,27 @@ def _cart_lines_and_total(context: ContextTypes.DEFAULT_TYPE) -> tuple[list[str]
     return lines, total, rows
 
 
-MANDATORY_PLASTIC_PACK_VENDORS = {
-    "Evelyn chip& protein",
-    "Grandpa chips",
+MANDATORY_PLASTIC_PACK_REQUIREMENTS: dict[str, set[str]] = {
+    "Grandpa chips": {
+        "Potato chips (small)",
+        "Potato chips (medium)",
+        "Potato chips (large)",
+        "Mashed chips (small)",
+        "Mashed chips (medium)",
+        "Mashed chips (large)",
+        "Fried yam (small)",
+        "Fried yam (large)",
+    },
+    "Evelyn chip& protein": {"Yam & Potatoes Chips"},
+    "DGG Grills": {"Bole (starting price)"},
 }
 MANDATORY_PLASTIC_PACK_ITEM_NAME = "Plastic pack"
+
+
+def _item_requires_mandatory_plastic_pack(vendor_name: str, item_name: str) -> bool:
+    required_items = MANDATORY_PLASTIC_PACK_REQUIREMENTS.get(vendor_name, ())
+    normalized_name = item_name.strip().casefold()
+    return any(normalized_name == required_item.casefold() for required_item in required_items)
 
 
 def _cart_missing_mandatory_plastic_pack_vendors(context: ContextTypes.DEFAULT_TYPE) -> list[str]:
@@ -2625,13 +2641,10 @@ def _cart_missing_mandatory_plastic_pack_vendors(context: ContextTypes.DEFAULT_T
             continue
 
         vendor_name = _cart_vendor_name(item)
-        if vendor_name not in MANDATORY_PLASTIC_PACK_VENDORS:
-            continue
-
-        item_name = str(item["name"] or "").strip().casefold()
-        if item_name == MANDATORY_PLASTIC_PACK_ITEM_NAME.casefold():
+        item_name = str(item["name"] or "").strip()
+        if item_name.casefold() == MANDATORY_PLASTIC_PACK_ITEM_NAME.casefold():
             satisfied_vendors.add(vendor_name)
-        else:
+        elif _item_requires_mandatory_plastic_pack(vendor_name, item_name):
             required_vendors.add(vendor_name)
 
     return sorted(vendor_name for vendor_name in required_vendors if vendor_name not in satisfied_vendors)
