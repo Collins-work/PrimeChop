@@ -13,6 +13,10 @@ from typing import Iterable, Optional, Any
 
 import psycopg
 from psycopg import sql
+from config import settings
+from telegram import Bot
+import html
+import threading
 
 
 logger = logging.getLogger(__name__)
@@ -625,7 +629,68 @@ class Database:
             # Notify optional Telegram mirror service (non-blocking)
             from services import order_mirror
 
-            order_mirror.notify(order_id)
+            # If a sender is registered, use it. Otherwise fall back to a direct
+            # Telegram Bot message so DB-level updates still reach the group.
+            sender = getattr(order_mirror, "_sender", None)
+            if sender is not None:
+                order_mirror.notify(order_id)
+            else:
+                logger.debug("order_mirror: no sender registered, falling back to direct mirror for order %s", order_id)
+                # Minimal best-effort mirror: fetch the order and post a concise message
+                    try:
+                    order = self.get_order(order_id)
+                    if not order:
+                        return
+                    group_chat_id = int(settings.order_log_group_chat_id or 0)
+                    if not group_chat_id:
+                        return
+                    order_ref = str(order.get("order_ref") or order.get("id"))
+                    status = str(order.get("status") or "unknown")
+                    provider = str(order.get("payment_provider") or "n/a")
+                    amount = int(order.get("amount") or 0)
+                    customer_id = int(order.get("customer_id") or 0)
+                    vendor = str(order.get("cafeteria_name") or "Unknown vendor")
+                    item_id = int(order.get("item_id") or 0)
+                    hall = str(order.get("hall_name") or "")
+                    room = str(order.get("room_number") or "")
+                    updated = str(order.get("updated_at") or order.get("created_at") or self.now_iso())
+
+                    # Try to include human-friendly names
+                    try:
+                        customer = self.get_user(customer_id) if customer_id else None
+                        customer_name = str(customer.get("full_name") if customer else "Unknown customer")
+                        customer_phone = str(customer.get("phone") if customer and customer.get("phone") else "N/A")
+                    except Exception:
+                        customer_name = "Unknown customer"
+                        customer_phone = "N/A"
+                    try:
+                        item = self.get_menu_item(item_id) if item_id else None
+                        item_name = str(item.get("name") if item and item.get("name") else f"Item #{item_id}")
+                    except Exception:
+                        item_name = f"Item #{item_id}"
+
+                    text = (
+                        "📦 <b>Order Tracker Mirror (fallback)</b>\n"
+                        f"<b>Order Ref:</b> {html.escape(order_ref)}\n"
+                        f"<b>Status:</b> {html.escape(status)}\n"
+                        f"<b>Payment:</b> ({html.escape(provider)})\n"
+                        f"<b>Amount:</b> ₦{amount:,}\n"
+                        f"<b>Customer:</b> {html.escape(customer_name)} ({customer_id})\n"
+                        f"<b>Customer Phone:</b> {html.escape(customer_phone)}\n"
+                        f"<b>Vendor:</b> {html.escape(vendor)}\n"
+                        f"<b>Item:</b> {html.escape(item_name)}\n"
+                        f"<b>Location:</b> {html.escape(hall)} Room {html.escape(room)}\n"
+                        f"<b>Updated:</b> {html.escape(updated)}"
+                    )
+
+                    try:
+                        bot = Bot(token=settings.telegram_bot_token)
+                        # Send in background thread to avoid blocking DB writers
+                        threading.Thread(target=lambda: bot.send_message(chat_id=group_chat_id, text=text, parse_mode="HTML"), daemon=True).start()
+                    except Exception:
+                        logger.exception("Fallback mirror: failed to send Telegram message for order %s", order_id)
+                except Exception:
+                    logger.exception("Fallback mirror: unexpected error for order %s", order_id)
         except Exception:
             logger.exception("Failed to notify order mirror for order %s", order_id)
 
@@ -2657,6 +2722,7 @@ class Database:
                 LEFT JOIN menu_items m ON m.id = o.item_id
                 LEFT JOIN users c ON c.user_id = o.customer_id
                 LEFT JOIN users w ON w.user_id = o.waiter_id
+                WHERE COALESCE(o.status, '') NOT IN ('pending_payment')
                 ORDER BY o.id DESC
                 LIMIT ?
                 """,
