@@ -637,7 +637,7 @@ class Database:
             else:
                 logger.debug("order_mirror: no sender registered, falling back to direct mirror for order %s", order_id)
                 # Minimal best-effort mirror: fetch the order and post a concise message
-                    try:
+                try:
                     order = self.get_order(order_id)
                     if not order:
                         return

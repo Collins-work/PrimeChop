@@ -2,14 +2,21 @@
 Resend mirrors for orders that may not have been mirrored.
 Usage:
   Set DATABASE_URL and TELEGRAM_BOT_TOKEN via environment or .env, then run:
-    python scripts/resend_mirrors.py --days 7 --limit 200
+    python -m scripts.resend_mirrors --days 7 --limit 200
 
 This script finds orders with status != 'pending_payment' created within the
 last `days` days and calls Database._mirror_order_by_id(order_id) for each.
 It is best-effort and will skip orders that are too old or already recent.
 """
+import os
+import sys
 import argparse
 from datetime import datetime, timedelta
+
+# Ensure the repo root is on sys.path so imports from the root work correctly.
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
 from config import settings
 from db import Database
 
