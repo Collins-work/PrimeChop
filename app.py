@@ -1939,6 +1939,54 @@ def _format_delivery_time_text_12h(value: str) -> str:
     return _format_hhmm_12h(text)
 
 
+def _parse_delivery_time_label(value: str) -> tuple[str, str] | None:
+    text = (value or "").strip()
+    if not text:
+        return None
+
+    m = re.fullmatch(r"\s*(\d{1,2}:\d{2}\s*(?:am|pm))\s*-\s*(\d{1,2}:\d{2}\s*(?:am|pm))\s*", text, re.IGNORECASE)
+    if m:
+        return m.group(1).replace(" ", ""), m.group(2).replace(" ", "")
+
+    m = re.fullmatch(r"\s*(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})\s*", text)
+    if m:
+        return m.group(1), m.group(2)
+
+    return None
+
+
+def _delivery_time_eta_minutes(delivery_time: str) -> int | None:
+    parsed = _parse_delivery_time_label(delivery_time)
+    if not parsed:
+        return None
+
+    start_text, _ = parsed
+    for fmt in ("%I:%M%p", "%H:%M"):
+        try:
+            start_time = datetime.strptime(start_text, fmt).time()
+            break
+        except ValueError:
+            start_time = None
+    if not start_time:
+        return None
+
+    now = datetime.now(db.tz)
+    candidate = datetime(
+        now.year,
+        now.month,
+        now.day,
+        start_time.hour,
+        start_time.minute,
+        tzinfo=db.tz,
+    )
+    if candidate <= now:
+        return None
+
+    seconds = int((candidate - now).total_seconds())
+    minutes = max(5, (seconds + 59) // 60)
+    return minutes
+
+
 def _format_tracker_datetime_12h(value) -> str:
     if isinstance(value, datetime):
         return value.strftime("%Y-%m-%d %I:%M%p").lstrip("0").lower()
@@ -7334,7 +7382,8 @@ async def claim_order_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             )
         return
 
-    claimed = db.claim_order(order_id, waiter_user_id, settings.default_delivery_eta_minutes)
+    eta_minutes = _delivery_time_eta_minutes(order.get("delivery_time") or "")
+    claimed = db.claim_order(order_id, waiter_user_id, eta_minutes or settings.default_delivery_eta_minutes)
 
     if not claimed:
         # Distinguish between 'already claimed by another waiter' and 'waiter reached max concurrent claims'
